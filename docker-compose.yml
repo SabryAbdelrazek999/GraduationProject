@@ -1,0 +1,84 @@
+services:
+  app:
+    build: .
+    container_name: zap_app
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+      zap:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+    environment:
+      - TZ=Africa/Cairo
+      - DATABASE_URL=postgresql://postgres:SecurePass123!@db:5432/zapdb
+      - ZAP_API_URL=http://zap:8080
+      - JWT_SECRET=super-secret-jwt-key-change-in-production-2025
+      - NODE_ENV=production
+      - PORT=5000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  db:
+    image: postgres:15-alpine
+    container_name: zap_db
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: SecurePass123!
+      POSTGRES_DB: zapdb
+      TZ: Africa/Cairo
+    ports:
+      - "5432:5432"
+    volumes:
+      - zap_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d zapdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    container_name: zap_daemon
+    ports:
+      - "8081:8080"
+    command: 
+      - zap.sh
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8080"
+      - -config
+      - api.disablekey=true
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
+      - -config
+      - database.response.body.size=52428800
+      - -config
+      - database.request.body.size=52428800
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  zap_db_data:
