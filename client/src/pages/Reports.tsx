@@ -53,6 +53,7 @@ export default function Reports() {
 
   const { data: reports, isLoading } = useQuery<Report[]>({
     queryKey: ["/api/reports"],
+    refetchInterval: 5000,
   });
 
   const deleteMutation = useMutation({
@@ -142,7 +143,7 @@ export default function Reports() {
         <CardContent className="p-0">
           {filteredReports.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground">
-              {reports?.length === 0 
+              {reports?.length === 0
                 ? "No reports yet. Start a scan to see reports here."
                 : "No reports match your search criteria."}
             </div>

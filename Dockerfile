@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends dumb-init curl 
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-RUN npm ci --only=production
+RUN npm ci --only=production --ignore-scripts
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server ./server

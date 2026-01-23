@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { FileText, ShieldAlert, Clock } from "lucide-react";
 import StatCard from "@/components/StatCard";
 import ActivityTable from "@/components/ActivityTable";
@@ -19,12 +20,18 @@ export default function Home() {
     queryKey: ["/api/scans/recent"],
   });
 
+  const [, setLocation] = useLocation();
+
   const handleViewDetails = (type: string) => {
-    console.log(`View details for: ${type}`);
+    if (type === "total-scans" || type === "vulnerabilities") {
+      setLocation("/dashboard");
+    } else if (type === "last-scan") {
+      setLocation("/reports");
+    }
   };
 
   const handleViewSource = (id: string) => {
-    console.log(`View source for scan: ${id}`);
+    setLocation(`/scans/${id}`);
   };
 
   if (statsLoading || scansLoading) {
@@ -44,7 +51,7 @@ export default function Home() {
   return (
     <div className="p-6 space-y-6" data-testid="page-home">
       <h1 className="text-2xl font-semibold text-foreground">Welcome Home</h1>
-      
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <StatCard
           icon={FileText}
@@ -69,7 +76,7 @@ export default function Home() {
         />
       </div>
 
-  <ActivityTable activities={recentScans || []} onViewSource={handleViewSource} />
+      <ActivityTable activities={recentScans || []} onViewSource={handleViewSource} />
     </div>
   );
 }

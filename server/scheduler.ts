@@ -88,7 +88,7 @@ export function initScheduler() {
 
 function calculateNextRun(schedule: any, fromDate: Date): Date {
   const [hours, minutes] = schedule.time.split(":").map(Number);
-  let nextRun = new Date(fromDate);
+  const nextRun = new Date(fromDate);
   
   // Set the time
   nextRun.setHours(hours, minutes, 0, 0);

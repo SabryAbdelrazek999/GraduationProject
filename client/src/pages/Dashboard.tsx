@@ -63,14 +63,14 @@ export default function Dashboard() {
 
   const stats = dashboard?.stats || { totalScans: 0, totalVulnerabilities: 0, criticalCount: 0, lastScanTime: "Never" };
   const weeklyData = dashboard?.weeklyData || [];
-  
-  const severityData = allVulnerabilities 
+
+  const severityData = allVulnerabilities
     ? [
-        { name: "Critical", value: allVulnerabilities.filter(v => v.severity === "Critical").length, color: severityColors.Critical },
-        { name: "High", value: allVulnerabilities.filter(v => v.severity === "High").length, color: severityColors.High },
-        { name: "Medium", value: allVulnerabilities.filter(v => v.severity === "Medium").length, color: severityColors.Medium },
-        { name: "Low", value: allVulnerabilities.filter(v => v.severity === "Low").length, color: severityColors.Low },
-      ]
+      { name: "Critical", value: allVulnerabilities.filter(v => v.severity === "critical").length, color: severityColors.Critical },
+      { name: "High", value: allVulnerabilities.filter(v => v.severity === "high").length, color: severityColors.High },
+      { name: "Medium", value: allVulnerabilities.filter(v => v.severity === "medium").length, color: severityColors.Medium },
+      { name: "Low", value: allVulnerabilities.filter(v => v.severity === "low").length, color: severityColors.Low },
+    ]
     : [];
 
   const recentFindings = (allVulnerabilities || [])
@@ -83,16 +83,16 @@ export default function Dashboard() {
     }));
 
   const getSeverityColor = (severity: string) => {
-    switch (severity) {
-      case "Critical":
-      case "High":
+    switch (severity.toLowerCase()) {
+      case "critical":
+      case "high":
         return "destructive";
       default:
         return "secondary";
     }
   };
 
-  const resolvedPercent = stats.totalVulnerabilities > 0 
+  const resolvedPercent = stats.totalVulnerabilities > 0
     ? Math.round(((stats.totalVulnerabilities - stats.criticalCount) / stats.totalVulnerabilities) * 100)
     : 100;
 

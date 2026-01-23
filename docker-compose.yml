@@ -14,6 +14,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./uploads:/app/uploads
+      - ./reports:/app/reports
     restart: unless-stopped
     environment:
       - TZ=Africa/Cairo
@@ -80,5 +81,30 @@ services:
       retries: 5
       start_period: 60s
 
+  dependency-check:
+    image: owasp/dependency-check
+    container_name: zap_depcheck
+    volumes:
+      - ./:/src
+      - ./reports:/report
+      - depcheck_data:/usr/share/dependency-check/data
+    command: --scan /src --format "ALL" --project "GradProject" --out /report
+    profiles:
+      - tools
+
+  nikto:
+    image: secsi/nikto
+    container_name: zap_nikto
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - ./reports:/reports
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["nikto -h http://app:5000 -o /reports/nikto-report.html -Format htm || true"]
+    profiles:
+      - tools
+
 volumes:
   zap_db_data:
+  depcheck_data:

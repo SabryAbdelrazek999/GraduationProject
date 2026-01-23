@@ -11,6 +11,7 @@ import NotFound from "@/pages/not-found";
 import Home from "@/pages/Home";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
+import { ThemeProvider } from "@/components/ThemeProvider";
 import Dashboard from "@/pages/Dashboard";
 import ScanNow from "@/pages/ScanNow";
 import ScanDetails from "@/pages/ScanDetails";
@@ -45,7 +46,7 @@ function ProtectedRouter() {
         <div className="flex flex-col flex-1 overflow-hidden">
           <header className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border bg-background sticky top-0 z-10">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
-            <UserMenu onProfileClick={() => {}} onApiKeysClick={() => {}} />
+            <UserMenu onProfileClick={() => { }} onApiKeysClick={() => { }} />
           </header>
           <main className="flex-1 overflow-auto bg-background">
             <Switch>
@@ -74,12 +75,14 @@ function ProtectedRouter() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <AuthProvider>
-          <ProtectedRouter />
-          <Toaster />
-        </AuthProvider>
-      </TooltipProvider>
+      <ThemeProvider defaultTheme="dark" storageKey="zap-scanner-theme">
+        <TooltipProvider>
+          <AuthProvider>
+            <ProtectedRouter />
+            <Toaster />
+          </AuthProvider>
+        </TooltipProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

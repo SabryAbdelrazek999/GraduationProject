@@ -147,7 +147,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       common.forEach((name) => {
         try {
           res.clearCookie(name);
-        } catch (e) {}
+        } catch (e) {
+          // ignore
+        }
       });
     } catch (err) {
       // swallow errors - we'll still return success so client can reload and
