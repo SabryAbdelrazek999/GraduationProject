@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -25,6 +25,7 @@ import CompareScans from "@/pages/CompareScans";
 
 function ProtectedRouter() {
   const { isAuthenticated, isLoading } = useAuth();
+  const [, setLocation] = useLocation();
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-screen">Loading...</div>;
@@ -47,7 +48,10 @@ function ProtectedRouter() {
         <div className="flex flex-col flex-1 overflow-hidden">
           <header className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border bg-background sticky top-0 z-10">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
-            <UserMenu onProfileClick={() => { }} onApiKeysClick={() => { }} />
+            <UserMenu
+              onProfileClick={() => setLocation("/settings")}
+              onApiKeysClick={() => setLocation("/settings")}
+            />
           </header>
           <main className="flex-1 overflow-auto bg-background">
             <Switch>

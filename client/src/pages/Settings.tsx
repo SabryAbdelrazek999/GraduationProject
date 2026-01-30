@@ -14,14 +14,28 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Key, Bell, Shield, Save, Copy, Check } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Key, Bell, Shield, Save, Copy, Check, Trash2, User as UserIcon, AlertCircle } from "lucide-react";
+import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Settings as SettingsType } from "@shared/schema";
 
 export default function Settings() {
+  const { user, logout } = useAuth();
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
+  const [confirmUsername, setConfirmUsername] = useState("");
   const [localSettings, setLocalSettings] = useState({
     scanDepth: "medium",
     autoScan: false,
@@ -73,6 +87,27 @@ export default function Settings() {
       toast({
         title: "API Key Regenerated",
         description: "Your new API key has been generated",
+      });
+    },
+  });
+
+  const deleteAccountMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", "/api/auth/delete-account");
+    },
+    onSuccess: () => {
+      toast({
+        title: "Account Deleted",
+        description: "Your account and all associated data have been permanently removed.",
+      });
+      logout();
+      window.location.href = "/login";
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete account",
+        variant: "destructive",
       });
     },
   });
@@ -134,16 +169,16 @@ export default function Settings() {
                   className="font-mono"
                   data-testid="input-api-key"
                 />
-                <Button 
-                  variant="secondary" 
+                <Button
+                  variant="secondary"
                   size="icon"
                   onClick={handleCopyKey}
                   data-testid="button-copy-key"
                 >
                   {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                 </Button>
-                <Button 
-                  variant="secondary" 
+                <Button
+                  variant="secondary"
                   onClick={() => regenerateKeyMutation.mutate()}
                   disabled={regenerateKeyMutation.isPending}
                   data-testid="button-regenerate-key"
@@ -154,6 +189,84 @@ export default function Settings() {
               <p className="text-xs text-muted-foreground">
                 Use this key to authenticate API requests
               </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-card border-card-border border-destructive/20">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-destructive">
+              <UserIcon className="w-5 h-5" />
+              Account Management
+            </CardTitle>
+            <CardDescription>
+              Manage your personal account and data portability
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>Username</Label>
+                <p className="text-sm font-medium mt-1">{user?.username || "Loading..."}</p>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => logout()}>
+                Sign Out
+              </Button>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <div className="bg-destructive/5 border border-destructive/20 rounded-lg p-4 space-y-3">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-destructive mt-0.5" />
+                  <div>
+                    <p className="font-semibold text-destructive">Danger Zone</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Deleting your account will permanently remove all your scans, reports, and settings. This action cannot be undone.
+                    </p>
+                  </div>
+                </div>
+
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" className="w-full sm:w-auto">
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      Delete My Account
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                      <AlertDialogDescription className="space-y-4 pt-2">
+                        <p>
+                          This action will permanently delete the account for <strong>{user?.username}</strong> and all associated data.
+                        </p>
+                        <div className="space-y-2">
+                          <Label htmlFor="confirm-username">Type your username to confirm:</Label>
+                          <Input
+                            id="confirm-username"
+                            placeholder={user?.username}
+                            value={confirmUsername}
+                            onChange={(e) => setConfirmUsername(e.target.value)}
+                            autoComplete="off"
+                          />
+                        </div>
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel onClick={() => setConfirmUsername("")}>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => deleteAccountMutation.mutate()}
+                        disabled={confirmUsername !== user?.username || deleteAccountMutation.isPending}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        {deleteAccountMutation.isPending ? "Deleting..." : "Permanently Delete"}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -171,8 +284,8 @@ export default function Settings() {
           <CardContent className="space-y-6">
             <div className="space-y-2">
               <Label>Default Scan Depth</Label>
-              <Select 
-                value={localSettings.scanDepth} 
+              <Select
+                value={localSettings.scanDepth}
                 onValueChange={(value) => setLocalSettings(prev => ({ ...prev, scanDepth: value }))}
               >
                 <SelectTrigger className="w-full md:w-64" data-testid="select-scan-depth">
@@ -234,8 +347,8 @@ export default function Settings() {
         </Card>
 
         <div className="flex justify-end">
-          <Button 
-            onClick={handleSaveSettings} 
+          <Button
+            onClick={handleSaveSettings}
             disabled={updateMutation.isPending}
             data-testid="button-save-settings"
           >

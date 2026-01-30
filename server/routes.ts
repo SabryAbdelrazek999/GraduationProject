@@ -17,7 +17,7 @@ function authenticateToken(req: any, res: any, next: any) {
   // Check API Key first (query param for downloads)
   const apiKey = req.query.apiKey as string;
   // console.log("Checking auth. apiKey:", apiKey, "currentApiKey:", currentApiKey);
-  
+
   if (apiKey && apiKey === currentApiKey) {
     (req as any).isApiKeyAuth = true;
     return next();
@@ -43,17 +43,17 @@ function getUserId(req: any): string | null {
 
 // ================= REGISTER ROUTES =================
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-  
+
   // ----------- Health Check -----------
   app.get("/health", async (_req, res) => {
     try {
       // Check database connection
       const db = await storage.getStats();
-      
+
       // Check ZAP connection
       const zapClient = new ZapClient();
       const zapReady = await zapClient.isReady(1, 1000); // Quick check
-      
+
       res.json({
         status: "healthy",
         timestamp: new Date().toISOString(),
@@ -157,6 +157,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     res.json({ success: true });
+  });
+
+  app.delete("/api/auth/delete-account", authenticateToken, async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ error: "Not authenticated" });
+
+      const success = await storage.deleteUser(userId);
+      if (!success) return res.status(500).json({ error: "Failed to delete account" });
+
+      // Clear cookies after deletion
+      res.clearCookie("token");
+      res.json({ success: true, message: "Account deleted successfully" });
+    } catch (error) {
+      console.error("Delete account error:", error);
+      res.status(500).json({ error: "Failed to delete account" });
+    }
   });
 
   // ----------- Stats & Dashboard -----------

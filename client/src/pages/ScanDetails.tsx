@@ -152,15 +152,28 @@ export default function ScanDetails() {
             </TabsList>
 
             <TabsContent value="findings">
-              {(scanData.status === "running" || scanData.status === "pending") && (
-                <div className="space-y-2 mb-6">
-                  <div className="flex justify-between text-sm">
-                    <span>Progress</span>
-                    <span>{scanData.progress || 0}%</span>
+              {(scanData.status === "running" || scanData.status === "pending") && (() => {
+                const progress = scanData.progress ?? 0;
+                return (
+                  <div className="space-y-4 mb-6">
+                    <div className="flex justify-between items-end text-sm">
+                      <div className="space-y-1">
+                        <span className="text-muted-foreground block text-xs uppercase tracking-wider font-semibold">Current Stage</span>
+                        <span className="font-medium">
+                          {progress === 0 && "Initializing..."}
+                          {progress > 0 && progress <= 10 && "Validating Target (Httpx)"}
+                          {progress > 10 && progress <= 25 && "Port Scanning (Nmap)"}
+                          {progress > 25 && progress <= 40 && "Web Server Scanning (Nikto)"}
+                          {progress > 40 && progress <= 95 && "Active Security Scanning (ZAP)"}
+                          {progress > 95 && "Finalizing Results..."}
+                        </span>
+                      </div>
+                      <span className="font-mono font-bold text-primary">{progress}%</span>
+                    </div>
+                    <Progress value={progress} className="h-2" />
                   </div>
-                  <Progress value={scanData.progress || 0} className="h-2" />
-                </div>
-              )}
+                );
+              })()}
 
               {scanData.status === "completed" && (
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">

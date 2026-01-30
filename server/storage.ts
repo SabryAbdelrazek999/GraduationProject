@@ -1,4 +1,4 @@
-import { 
+import {
   type User, type InsertUser,
   type Scan, type InsertScan,
   type Vulnerability, type InsertVulnerability,
@@ -20,6 +20,7 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   createGoogleUser(googleId: string, email: string, username: string, avatar?: string): Promise<User>;
   updateUserApiKey(id: string, apiKey: string): Promise<User | undefined>;
+  deleteUser(id: string): Promise<boolean>;
 
   // Scans
   getScan(id: string): Promise<Scan | undefined>;
@@ -103,10 +104,10 @@ export class MemStorage implements IStorage {
 
   async createUser(insertUser: InsertUser): Promise<User> {
     const id = randomUUID();
-    const user: User = { 
+    const user: User = {
       username: insertUser.username || null,
       password: insertUser.password || null,
-      id, 
+      id,
       apiKey: null,
       googleId: null,
       email: null,
@@ -138,6 +139,29 @@ export class MemStorage implements IStorage {
       this.users.set(id, user);
     }
     return user;
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    // Cascading delete for MemStorage
+    const userScans = Array.from(this.scans.values()).filter(s => s.userId === id);
+    for (const scan of userScans) {
+      await this.deleteVulnerabilitiesByScan(scan.id);
+      this.scans.delete(scan.id);
+    }
+
+    Array.from(this.scheduledScans.values())
+      .filter(s => s.userId === id)
+      .forEach(s => this.scheduledScans.delete(s.id));
+
+    Array.from(this.settings.values())
+      .filter(s => s.userId === id)
+      .forEach(s => this.settings.delete(s.id));
+
+    Array.from(this.reports.values())
+      .filter(r => r.userId === id)
+      .forEach(r => this.reports.delete(r.id));
+
+    return this.users.delete(id);
   }
 
   // Scans
@@ -370,7 +394,7 @@ export class DbStorage implements IStorage {
     if (!dbUrl) {
       throw new Error("DATABASE_URL environment variable is not set. Using in-memory storage instead.");
     }
-    
+
     // Create PostgreSQL connection pool
     this.pool = new Pool({
       connectionString: dbUrl,
@@ -378,7 +402,7 @@ export class DbStorage implements IStorage {
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
     });
-    
+
     this.db = drizzle(this.pool);
     console.log("✅ PostgreSQL connected successfully");
   }
@@ -430,6 +454,30 @@ export class DbStorage implements IStorage {
   async updateUserApiKey(id: string, apiKey: string): Promise<User | undefined> {
     const result = await this.db.update(users).set({ apiKey }).where(eq(users.id, id)).returning();
     return result[0];
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    return await this.db.transaction(async (tx) => {
+      // 1. Get all scan IDs to delete vulnerabilities
+      const userScans = await tx.select({ id: scans.id }).from(scans).where(eq(scans.userId, id));
+      const scanIds = userScans.map(s => s.id);
+
+      if (scanIds.length > 0) {
+        // 2. Delete vulnerabilities
+        await tx.delete(vulnerabilities).where(sql`${vulnerabilities.scanId} IN ${scanIds}`);
+        // 3. Delete scans
+        await tx.delete(scans).where(eq(scans.userId, id));
+      }
+
+      // 4. Delete other associated data
+      await tx.delete(scheduledScans).where(eq(scheduledScans.userId, id));
+      await tx.delete(settings).where(eq(settings.userId, id));
+      await tx.delete(reports).where(eq(reports.userId, id));
+
+      // 5. Delete user
+      const result = await tx.delete(users).where(eq(users.id, id));
+      return true;
+    });
   }
 
   // Scans
@@ -613,7 +661,7 @@ export class DbStorage implements IStorage {
     const scanCount = await this.db.select({ count: sql`count(*)` }).from(scans);
     const vulnCount = await this.db.select({ count: sql`count(*)` }).from(vulnerabilities);
     const criticalCount = await this.db.select({ count: sql`count(*)` }).from(vulnerabilities).where(eq(vulnerabilities.severity, "critical"));
-    
+
     return {
       totalScans: Number(scanCount[0]?.count || 0),
       totalVulnerabilities: Number(vulnCount[0]?.count || 0),
@@ -623,6 +671,6 @@ export class DbStorage implements IStorage {
 }
 
 // Use database storage if DATABASE_URL is set, otherwise fall back to in-memory
-export const storage: IStorage = process.env.DATABASE_URL 
+export const storage: IStorage = process.env.DATABASE_URL
   ? new DbStorage()
   : new MemStorage();

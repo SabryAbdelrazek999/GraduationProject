@@ -3,14 +3,17 @@ import axios from "axios";
 interface ZapAlert {
   id: string;
   pluginId: string;
-  pluginName: string;
-  name: string;
+  pluginName?: string;
+  alert?: string; // Often ZAP uses 'alert' for the name
+  name?: string;
   description: string;
   solution: string;
-  riskcode: string;
+  riskCode?: string;
+  riskcode?: string; // Some versions use lowercase
+  risk?: string; // String representation (High, Medium, etc)
   confidence: string;
-  riskdesc: string;
-  confidencedesc: string;
+  riskdesc?: string;
+  confidencedesc?: string;
   url: string;
   messageId?: string;
   evidence?: string;
@@ -73,11 +76,32 @@ export class ZapClient {
   }
 
   /**
+   * Create a new session to clear ZAP's internal database
+   * This prevents the "Data cache size limit is reached" error
+   */
+  async clearSession(): Promise<void> {
+    try {
+      console.log('[ZAP] Creating new session to clear database...');
+      await this.client.get(
+        `${this.baseUrl}/JSON/core/action/newSession?overwrite=true`,
+        { timeout: 30000 }
+      );
+      console.log('[ZAP] ✅ New session created, database cleared');
+    } catch (error: any) {
+      console.log(`[ZAP] ⚠️  Could not create new session: ${error.message}`);
+      // Non-fatal, continue anyway
+    }
+  }
+
+  /**
    * Start an active scan on the target URL
    * Returns scan ID
    */
   async startScan(targetUrl: string, profile: string = "quick"): Promise<string> {
     try {
+      // Clear previous session to free up database cache
+      await this.clearSession();
+
       console.log(`[ZAP] Starting active scan for ${targetUrl}`);
 
       // First, add URL to context
@@ -132,11 +156,13 @@ export class ZapClient {
   /**
    * Poll spider status until completion
    */
-  async waitForSpider(scanId: string, maxWaitMs: number = 300000): Promise<void> {
+  async waitForSpider(scanId: string, maxWaitMs?: number): Promise<void> {
+    const defaultTimeout = parseInt(process.env.ZAP_SPIDER_TIMEOUT_MS || "900000", 10);
+    const timeout = maxWaitMs || defaultTimeout;
     const startTime = Date.now();
     const pollInterval = 5000; // 5 seconds
 
-    while (Date.now() - startTime < maxWaitMs) {
+    while (Date.now() - startTime < timeout) {
       try {
         const response = await this.client.get(
           `${this.baseUrl}/JSON/spider/view/status?scanId=${scanId}`,
@@ -159,18 +185,20 @@ export class ZapClient {
       }
     }
 
-    throw new Error(`ZAP spider ${scanId} did not complete within ${maxWaitMs}ms`);
+    throw new Error(`ZAP spider ${scanId} did not complete within ${timeout}ms`);
   }
 
   /**
    * Poll scan status until completion
    * Progress is 0-100
    */
-  async waitForScan(scanId: string, maxWaitMs: number = 600000, onProgress?: (progress: number) => void): Promise<void> {
+  async waitForScan(scanId: string, maxWaitMs?: number, onProgress?: (progress: number) => void): Promise<void> {
+    const defaultTimeout = parseInt(process.env.ZAP_SCAN_TIMEOUT_MS || "3600000", 10);
+    const timeout = maxWaitMs || defaultTimeout;
     const startTime = Date.now();
     const pollInterval = 10000; // 10 seconds
 
-    while (Date.now() - startTime < maxWaitMs) {
+    while (Date.now() - startTime < timeout) {
       try {
         const response = await this.client.get(
           `${this.baseUrl}/JSON/ascan/view/status?scanId=${scanId}`,
@@ -197,7 +225,7 @@ export class ZapClient {
       }
     }
 
-    throw new Error(`ZAP scan ${scanId} did not complete within ${maxWaitMs}ms`);
+    throw new Error(`ZAP scan ${scanId} did not complete within ${timeout}ms`);
   }
 
   /**
@@ -225,27 +253,46 @@ export class ZapClient {
    * Convert ZAP alerts to our vulnerability format
    */
   convertAlertsToVulnerabilities(alerts: ZapAlert[]): ZapScanResult["vulnerabilities"] {
+    if (alerts.length > 0) {
+      console.log(`[ZAP] Debug - First alert keys: ${Object.keys(alerts[0]).join(", ")}`);
+      const first = alerts[0];
+      console.log(`[ZAP] Debug - Risk data: riskCode=${first.riskCode}, riskcode=${first.riskcode}, risk=${first.risk}`);
+    }
+
     const riskMap: Record<string, "critical" | "high" | "medium" | "low"> = {
-      "3": "critical",
-      "2": "high",
-      "1": "medium",
+      "3": "high",
+      "High": "high",
+      "2": "medium",
+      "Medium": "medium",
+      "1": "low",
+      "Low": "low",
       "0": "low",
+      "Informational": "low",
     };
 
-    return alerts.map((alert) => ({
-      type: alert.pluginName || alert.name,
-      severity: (riskMap[alert.riskcode] || "low") as "critical" | "high" | "medium" | "low",
-      title: alert.name,
-      description: alert.description,
-      affectedUrl: alert.url,
-      remediation: alert.solution,
-      details: {
-        pluginId: alert.pluginId,
-        confidence: alert.confidencedesc,
-        evidence: alert.evidence || null,
-        param: alert.param || null,
-      },
-    }));
+    return alerts.map((alert) => {
+      // Find the best risk indicator
+      const riskKey = alert.riskCode || alert.riskcode || alert.risk || "0";
+      const severity = (riskMap[riskKey] || "low") as "critical" | "high" | "medium" | "low";
+      const name = alert.alert || alert.name || alert.pluginName || "Unknown Vulnerability";
+
+      return {
+        type: alert.pluginName || name,
+        severity,
+        title: name,
+        description: alert.description || "No description provided",
+        affectedUrl: alert.url,
+        remediation: alert.solution || "No solution provided",
+        details: {
+          pluginId: alert.pluginId,
+          confidence: alert.confidencedesc || alert.confidence,
+          evidence: alert.evidence || null,
+          param: alert.param || null,
+          riskCode: alert.riskCode || alert.riskcode,
+          sourceRisk: alert.risk,
+        },
+      };
+    });
   }
 
   /**
@@ -262,8 +309,8 @@ export class ZapClient {
       // Start the scan
       const scanId = await this.startScan(targetUrl, profile);
 
-      // Wait for completion
-      await this.waitForScan(scanId, 600000, onProgress);
+      // Wait for completion (timeout is now handled inside waitForScan)
+      await this.waitForScan(scanId, undefined, onProgress);
 
       // Get results
       const alerts = await this.getAlerts(scanId);
