@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, Play, Loader2, Globe, Shield, Zap, CheckCircle, AlertTriangle } from "lucide-react";
+import { Search, Play, Loader2, Globe, Shield, Zap, CheckCircle, AlertTriangle, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Scan } from "@shared/schema";
@@ -23,6 +23,7 @@ export default function ScanNow() {
   const [url, setUrl] = useState("");
   const [scanType, setScanType] = useState("quick");
   const [activeScanId, setActiveScanId] = useState<string | null>(null);
+  const [isCanceling, setIsCanceling] = useState(false);
   const { toast } = useToast();
 
   const { data: recentScans } = useQuery<Scan[]>({
@@ -33,8 +34,9 @@ export default function ScanNow() {
     queryKey: ["/api/scans", activeScanId],
     enabled: !!activeScanId,
     refetchInterval: (data) => {
-      if (data?.state?.data?.status === "running" || data?.state?.data?.status === "pending") {
-        return 2000;
+      const status = data?.state?.data?.status;
+      if (status === "running" || status === "pending" || status === "cancelled") {
+        return 1000; // Faster refresh when cancelling
       }
       return false;
     },
@@ -63,6 +65,31 @@ export default function ScanNow() {
     },
   });
 
+  const cancelMutation = useMutation({
+    mutationFn: async (scanId: string) => {
+      try {
+        const response = await apiRequest("POST", `/api/scans/${scanId}/cancel`, {});
+        return response;
+      } catch (error: any) {
+        console.error("Cancel error:", error);
+        throw error;
+      }
+    },
+    onSuccess: () => {
+      setIsCanceling(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/scans", activeScanId] });
+    },
+    onError: (error: any) => {
+      setIsCanceling(false);
+      console.error("Mutation error:", error);
+      toast({
+        title: "Cancel Failed",
+        description: error.message || "Failed to cancel the scan.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleStartScan = () => {
     if (!url) {
       toast({
@@ -79,6 +106,13 @@ export default function ScanNow() {
     }
 
     scanMutation.mutate({ targetUrl, scanType });
+  };
+
+  const handleCancelScan = () => {
+    if (activeScanId) {
+      setIsCanceling(true);
+      cancelMutation.mutate(activeScanId);
+    }
   };
 
   const recentUrls = Array.from(new Set((recentScans || []).map(s => s.targetUrl))).slice(0, 5);
@@ -183,32 +217,61 @@ export default function ScanNow() {
       </Card>
 
       {activeScan && (
-        <Card className={`bg-card border-card-border ${activeScan.status === "running" || activeScan.status === "pending" ? "border-primary/50" : activeScan.status === "completed" ? "border-primary" : "border-destructive"}`}>
+        <Card className={`bg-card border-card-border ${activeScan.status === "running" || activeScan.status === "pending" || isCanceling ? "border-primary/50" : activeScan.status === "completed" ? "border-primary" : activeScan.status === "cancelled" ? "border-yellow-500/50" : "border-destructive"}`}>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               {activeScan.status === "running" || activeScan.status === "pending" ? (
                 <Loader2 className="w-5 h-5 text-primary animate-spin" />
               ) : activeScan.status === "completed" ? (
                 <CheckCircle className="w-5 h-5 text-primary" />
+              ) : activeScan.status === "cancelled" || isCanceling ? (
+                <AlertTriangle className="w-5 h-5 text-yellow-500" />
               ) : (
                 <AlertTriangle className="w-5 h-5 text-destructive" />
               )}
-              {activeScan.status === "running" || activeScan.status === "pending" 
-                ? "Scan in Progress" 
-                : activeScan.status === "completed" 
-                  ? "Scan Completed" 
-                  : "Scan Failed"}
+              {isCanceling
+                ? "Stopping Scan..."
+                : activeScan.status === "running" || activeScan.status === "pending" 
+                  ? "Scan in Progress" 
+                  : activeScan.status === "completed" 
+                    ? "Scan Completed"
+                    : activeScan.status === "cancelled"
+                      ? "Scan Cancelled"
+                      : "Scan Failed"}
             </CardTitle>
             <CardDescription className="font-mono">{activeScan.targetUrl}</CardDescription>
           </CardHeader>
           <CardContent>
             {(activeScan.status === "running" || activeScan.status === "pending") && (
-              <div className="space-y-2 mb-6">
-                <div className="flex justify-between text-sm">
-                  <span>Progress</span>
-                  <span>{activeScan.progress || 0}%</span>
+              <div className="space-y-4 mb-6">
+                <div className="flex justify-between items-center">
+                  <div className="flex-1">
+                    <div className="flex justify-between text-sm mb-2">
+                      <span>Progress</span>
+                      <span>{activeScan.progress || 0}%</span>
+                    </div>
+                    <Progress value={activeScan.progress || 0} className="h-2" />
+                  </div>
+                  <Button
+                    onClick={handleCancelScan}
+                    disabled={isCanceling}
+                    variant="destructive"
+                    size="sm"
+                    className="ml-4"
+                  >
+                    {isCanceling ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Stopping...
+                      </>
+                    ) : (
+                      <>
+                        <X className="w-4 h-4 mr-2" />
+                        Stop
+                      </>
+                    )}
+                  </Button>
                 </div>
-                <Progress value={activeScan.progress || 0} className="h-2" />
               </div>
             )}
             {activeScan.status === "completed" && (
@@ -233,6 +296,11 @@ export default function ScanNow() {
                   <p className="text-2xl font-bold text-primary">{activeScan.lowCount}</p>
                   <p className="text-xs text-muted-foreground">Low</p>
                 </div>
+              </div>
+            )}
+            {activeScan.status === "cancelled" && (
+              <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-md">
+                <p className="text-yellow-600 font-medium">Scan has been cancelled.</p>
               </div>
             )}
             

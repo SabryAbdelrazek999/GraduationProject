@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { storage } from "./storage";
-import { performScan } from "./scanner";
+import { performScan, setScanAbortController } from "./scanner";
 import { log } from "./index";
 
 // Store active cron tasks
@@ -60,8 +60,12 @@ export function initScheduler() {
             scanType: "quick",
           });
 
+          // Create and register AbortController before starting scan
+          const abortController = new AbortController();
+          setScanAbortController(scan.id, abortController);
+
           // Run scan asynchronously
-          performScan(scan.id, schedule.targetUrl, "quick").catch(err => {
+          performScan(scan.id, schedule.targetUrl, "quick", abortController).catch(err => {
             log(`Scheduled scan failed: ${err.message}`, "scheduler");
           });
 

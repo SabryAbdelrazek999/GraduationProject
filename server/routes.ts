@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
-import { performScan, getLastScanTime } from "./scanner";
+import { performScan, getLastScanTime, cancelScan, setScanAbortController } from "./scanner";
 import { insertScanSchema, insertScheduledScanSchema, insertSettingsSchema } from "@shared/schema";
 import { ZapClient } from "./zap-client";
 
@@ -84,8 +84,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const user = await storage.createUser({ username, password: hashedPassword });
 
       const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-      res.cookie("token", token, { httpOnly: true, secure: process.env.NODE_ENV === "production", maxAge: 7 * 24 * 60 * 60 * 1000 });
-
+      res.cookie("token", token, { httpOnly: true, secure: process.env.NODE_ENV === "production",sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 * 1000 });
       res.status(201).json({ user: { id: user.id, username: user.username }, token });
     } catch (error) {
       console.error("Signup error:", error);
@@ -105,7 +104,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!isValid) return res.status(401).json({ error: "Invalid credentials" });
 
       const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-      res.cookie("token", token, { httpOnly: true, secure: process.env.NODE_ENV === "production", maxAge: 7 * 24 * 60 * 60 * 1000 });
+      res.cookie("token", token, { httpOnly: true, secure: process.env.NODE_ENV === "production",sameSite: 'strict', maxAge: 7 * 24 * 60 * 60 * 1000 });
 
       res.json({ user: { id: user.id, username: user.username }, token });
     } catch (error) {
@@ -265,7 +264,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!parsed.success) return res.status(400).json({ error: "Invalid scan data", details: parsed.error });
 
       const scan = await storage.createScan({ ...parsed.data, userId });
-      performScan(scan.id, parsed.data.targetUrl, parsed.data.scanType || "quick");
+      
+      // Create and register AbortController before starting scan
+      const abortController = new AbortController();
+      setScanAbortController(scan.id, abortController);
+      
+      performScan(scan.id, parsed.data.targetUrl, parsed.data.scanType || "quick", abortController);
       res.status(201).json(scan);
     } catch (error) {
       res.status(500).json({ error: "Failed to create scan" });
@@ -285,6 +289,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to delete scan" });
+    }
+  });
+
+  app.post("/api/scans/:id/cancel", authenticateToken, async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ error: "Not authenticated" });
+
+      const scan = await storage.getScan(req.params.id);
+      if (!scan || scan.userId !== userId) return res.status(404).json({ error: "Scan not found" });
+
+      const cancelled = cancelScan(req.params.id);
+      if (cancelled) {
+        res.json({ success: true, message: "Scan cancellation requested" });
+      } else {
+        res.status(400).json({ error: "Scan is not running" });
+      }
+    } catch (error) {
+      res.status(500).json({ error: "Failed to cancel scan" });
     }
   });
 

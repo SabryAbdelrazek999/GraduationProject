@@ -102,6 +102,68 @@ DATABASE_URL=           # Optional PostgreSQL
 SESSION_SECRET=         # Optional session secret
 ```
 
+Important: Before starting the app with Docker or locally, create a local `.env` from `.env.example` and set real secret values. The repository now ignores `.env` to avoid committing secrets.
+
+Example (create `.env`):
+
+```bash
+cp .env.example .env
+# then edit .env and set secure values (DB password, JWT secret, etc.)
+```
+
+If you use Docker Compose the service is configured to load the `.env` file via `env_file` in `docker-compose.yml`, so you do not need to hard-code secrets in the compose file.
+
+Port: the application listens on port `5000` by default (mapped in Docker as `5000:5000`).
+
+**Security (Secrets) Note**
+- Secrets and passwords were removed from tracked files and moved to the local `.env` file which is listed in `.gitignore`.
+- A safe `.env.example` was added containing placeholders for required variables. Do NOT commit real secrets.
+- If any secret was previously exposed in a public repo, rotate/regenerate it (GitHub tokens, API keys, DB passwords, JWT secrets) immediately.
+
+Quick checklist before running:
+- Copy `.env.example` to `.env` and fill values.
+- Ensure `.env` is not committed (it's included in `.gitignore`).
+- Run `docker-compose up --build` or `npm run dev`.
+
+## 🔒 Security & Dependency Auditing
+
+This project includes automated security scanning to detect vulnerable dependencies.
+
+### Running Security Audit
+
+```bash
+# Check for vulnerabilities
+npm audit
+
+# Attempt safe fixes (non-breaking updates)
+npm audit fix
+
+# If you need to fix all vulnerabilities (may include breaking changes)
+npm audit fix --force
+```
+
+### What We Found & Fixed
+
+- **Before:** 12 vulnerabilities (4 High, 7 Moderate, 1 Low)
+- **After `npm audit fix`:** 5 vulnerabilities (5 Moderate, 0 High)
+  - Fixed: `express`, `qs`, `body-parser`, `glob`, `lodash`, `brace-expansion`, `undici`
+  - Remaining: 5 moderate-severity issues in `esbuild`/`vite` (require breaking version changes)
+
+### Audit Reports
+
+Detailed audit reports are saved in:
+- `output/audit-before.json` — Initial vulnerability scan
+- `output/audit-after-fix.json` — After running `npm audit fix`
+
+Open these JSON files to see full details of each vulnerability, affected versions, and remediation paths.
+
+### Best Practices
+
+- Run `npm audit` regularly during development
+- Update dependencies frequently: `npm update`
+- Review audit reports before deploying to production
+- Never ignore critical or high-severity vulnerabilities
+
 ## Docker Deployment
 
 ### Production Build

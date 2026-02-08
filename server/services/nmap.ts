@@ -59,7 +59,7 @@ export class NmapService {
             };
 
         } catch (error: any) {
-            console.error(`[Nmap] Scan failed for ${targetHost}:`, error.message);
+           console.error("[Nmap] Scan failed", {target: targetHost,error: error.message});
             // If execution fails, return empty result rather than throwing, 
             // but maybe strict enforcement requires throwing? 
             // USER SAID: "Prevent Nikto or OWASP ZAP from running if httpx or Nmap fails."

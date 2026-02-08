@@ -94,7 +94,7 @@ export class NiktoService {
             };
 
         } catch (error: any) {
-            console.error(`[Nikto] Scan failed for ${targetUrl}:`, error.message);
+            console.error("[Httpx] Scan failed", { target: targetUrl, error: error.message });
             // Cleanup
             try { await fs.unlink(tempFile); } catch { /* ignore cleanup error */ }
             throw error;

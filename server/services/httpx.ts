@@ -47,7 +47,7 @@ export class HttpxService {
             };
 
         } catch (error: any) {
-            console.error(`[Httpx] Scan failed for ${targetUrl}:`, error.message);
+           console.error("[Httpx] Scan failed for ${targetUrl}:", error.message);
             // If execution fails completely, assume unreachable or tool error
             return { url: targetUrl, reachable: false };
         }

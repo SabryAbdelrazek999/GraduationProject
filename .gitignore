@@ -6,3 +6,15 @@ vite.config.ts.*
 *.tar.gz
 reports/
 depcheck_data/
+
+# Environment Variables - SECRETS PROTECTION 🔐
+.env
+.env.local
+.env.*.local
+.env.production.local
+
+# Sensitive Files
+*.pem
+*.key
+*.secret
+secrets.json

@@ -13,7 +13,14 @@ interface ScanResult {
   lowCount: number;
 }
 
-export async function performScan(scanId: string, targetUrl: string, scanType: string): Promise<ScanResult> {
+// Map to store AbortControllers for active scans
+const activeScanAbortControllers = new Map<string, AbortController>();
+
+export function setScanAbortController(scanId: string, abortController: AbortController): void {
+  activeScanAbortControllers.set(scanId, abortController);
+}
+
+export async function performScan(scanId: string, targetUrl: string, scanType: string, abortController?: AbortController): Promise<ScanResult> {
   const vulnerabilities: InsertVulnerability[] = [];
   let criticalCount = 0;
   let highCount = 0;
@@ -21,6 +28,12 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
   let lowCount = 0;
 
   try {
+    // Use provided AbortController or create a new one
+    const controller = abortController || new AbortController();
+    if (!abortController) {
+      activeScanAbortControllers.set(scanId, controller);
+    }
+
     const urlObj = new URL(targetUrl);
     const hostname = urlObj.hostname;
 
@@ -30,9 +43,15 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
       startedAt: new Date()
     });
 
+    // Check if scan was cancelled
+    if (controller.signal.aborted) {
+      throw new Error("Scan cancelled by user");
+    }
+
     console.log(`[Scanner] Starting pipeline for ${targetUrl}`);
 
     // --- Stage 1: Httpx (Optional - best effort) ---
+    if (controller.signal.aborted) throw new Error("Scan cancelled by user");
     console.log(`[Scanner] Stage 1: Httpx - Validating target...`);
     await storage.updateScan(scanId, { progress: 10 });
 
@@ -84,6 +103,7 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
 
 
     // --- Stage 2: Nmap (Mandatory) ---
+    if (controller.signal.aborted) throw new Error("Scan cancelled by user");
     console.log(`[Scanner] Stage 2: Nmap - Port scanning...`);
     await storage.updateScan(scanId, { progress: 25 });
 
@@ -110,6 +130,7 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
     }
 
     // --- Stage 3: Nikto ---
+    if (controller.signal.aborted) throw new Error("Scan cancelled by user");
     console.log(`[Scanner] Stage 3: Nikto - Web server scanning...`);
     await storage.updateScan(scanId, { progress: 40 });
 
@@ -146,6 +167,7 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
     }
 
     // --- Stage 4: OWASP ZAP ---
+    if (controller.signal.aborted) throw new Error("Scan cancelled by user");
     console.log(`[Scanner] Stage 4: ZAP - Active scanning...`);
     await storage.updateScan(scanId, { progress: 60 });
 
@@ -225,9 +247,13 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
   } catch (error: any) {
     console.error(`[Scanner] Scan pipeline failed: ${error.message}`);
 
+    // Remove abort controller
+    activeScanAbortControllers.delete(scanId);
+
     // Update failed status
+    const status = error.message === "Scan cancelled by user" ? "cancelled" : "failed";
     await storage.updateScan(scanId, {
-      status: "failed",
+      status: status as any,
       completedAt: new Date(),
       totalVulnerabilities: 0,
       criticalCount: 0,
@@ -253,6 +279,15 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
     mediumCount,
     lowCount,
   };
+}
+
+export function cancelScan(scanId: string): boolean {
+  const abortController = activeScanAbortControllers.get(scanId);
+  if (abortController) {
+    abortController.abort();
+    return true;
+  }
+  return false;
 }
 
 export async function getLastScanTime(): Promise<string> {
