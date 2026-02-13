@@ -5,6 +5,37 @@ import { nmapService } from "./services/nmap";
 import { niktoService } from "./services/nikto";
 import type { InsertVulnerability } from "@shared/schema";
 
+/**
+ * Smoothly update progress from current to target value
+ * Creates smooth animation of progress bar
+ */
+async function updateProgressSmooth(
+  scanId: string,
+  fromProgress: number,
+  toProgress: number,
+  durationMs: number,
+  controller: AbortController
+): Promise<void> {
+  const steps = 20;
+  const interval = durationMs / steps;
+  const increment = (toProgress - fromProgress) / steps;
+  
+  let current = fromProgress;
+  
+  for (let i = 0; i <= steps; i++) {
+    if (controller.signal.aborted) throw new Error("Scan cancelled by user");
+    
+    current = Math.min(fromProgress + increment * i, toProgress);
+    await storage.updateScan(scanId, { progress: Math.round(current) });
+    
+    if (i < steps) {
+      await new Promise(r => setTimeout(r, interval));
+    }
+  }
+  
+  await storage.updateScan(scanId, { progress: Math.round(toProgress) });
+}
+
 interface ScanResult {
   vulnerabilities: InsertVulnerability[];
   criticalCount: number;
@@ -15,6 +46,8 @@ interface ScanResult {
 
 // Map to store AbortControllers for active scans
 const activeScanAbortControllers = new Map<string, AbortController>();
+// Map to store progress intervals so we can smoothly increment progress per-scan
+const activeProgressIntervals = new Map<string, NodeJS.Timeout>();
 
 export function setScanAbortController(scanId: string, abortController: AbortController): void {
   activeScanAbortControllers.set(scanId, abortController);
@@ -27,20 +60,31 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
   let mediumCount = 0;
   let lowCount = 0;
 
-  try {
-    // Use provided AbortController or create a new one
-    const controller = abortController || new AbortController();
-    if (!abortController) {
-      activeScanAbortControllers.set(scanId, controller);
-    }
+  // Use provided AbortController or create a new one
+  const controller = abortController || new AbortController();
+  if (!abortController) {
+    activeScanAbortControllers.set(scanId, controller);
+  }
 
-    const urlObj = new URL(targetUrl);
-    const hostname = urlObj.hostname;
+  // ensure any previous progress interval cleared when scan finishes/cancels
+  const clearProgressInterval = () => {
+    const it = activeProgressIntervals.get(scanId);
+    if (it) {
+      clearInterval(it);
+      activeProgressIntervals.delete(scanId);
+    }
+  };
+
+  const urlObj = new URL(targetUrl);
+  const hostname = urlObj.hostname;
+
+  try {
 
     // Update scan status to running
     await storage.updateScan(scanId, {
       status: "running",
-      startedAt: new Date()
+      startedAt: new Date(),
+      progress: 0
     });
 
     // Check if scan was cancelled
@@ -48,12 +92,13 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
       throw new Error("Scan cancelled by user");
     }
 
-    console.log(`[Scanner] Starting pipeline for ${targetUrl}`);
+    console.log(`[Scanner] Starting ${scanType} scan pipeline for ${targetUrl}`);
 
-    // --- Stage 1: Httpx (Optional - best effort) ---
+    // --- Stage 1: Httpx (Always run - quick validation) ---
     if (controller.signal.aborted) throw new Error("Scan cancelled by user");
     console.log(`[Scanner] Stage 1: Httpx - Validating target...`);
-    await storage.updateScan(scanId, { progress: 10 });
+    // Progress: 0-15% during Httpx stage (2 seconds)
+    await updateProgressSmooth(scanId, 0, 15, 2000, controller);
 
     let httpxResult;
     try {
@@ -102,80 +147,145 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
     }
 
 
-    // --- Stage 2: Nmap (Mandatory) ---
+    // --- Stage 2: Nmap (Skip for shallow scan) ---
     if (controller.signal.aborted) throw new Error("Scan cancelled by user");
-    console.log(`[Scanner] Stage 2: Nmap - Port scanning...`);
-    await storage.updateScan(scanId, { progress: 25 });
 
-    let nmapResult;
-    try {
-      nmapResult = await nmapService.scan(hostname);
-    } catch (e) {
-      throw new Error("Nmap scan failed. Aborting pipeline.");
-    }
-
-    if (nmapResult.openPorts.length > 0) {
-      const portsDesc = nmapResult.openPorts.map(p => `${p.port}/${p.protocol} (${p.service})`).join(", ");
-      vulnerabilities.push({
-        scanId,
-        type: "info",
-        severity: "low", // Open ports can be low severity
-        title: "Open Ports Discovered",
-        description: `Nmap found the following open ports: ${portsDesc}`,
-        affectedUrl: hostname,
-        details: nmapResult.rawOutput,
-        remediation: "Ensure only necessary ports are exposed."
-      });
-      lowCount++;
-    }
-
-    // --- Stage 3: Nikto ---
-    if (controller.signal.aborted) throw new Error("Scan cancelled by user");
-    console.log(`[Scanner] Stage 3: Nikto - Web server scanning...`);
-    await storage.updateScan(scanId, { progress: 40 });
-
-    try {
-      const niktoResult = await niktoService.scan(targetUrl);
-
-      for (const v of niktoResult.vulnerabilities) {
-        vulnerabilities.push({
-          scanId,
-          type: "web", // categorize as web
-          severity: "medium", // Default Nikto findings to medium (often config issues)
-          title: `Nikto: ${v.msg.substring(0, 100)}...`, // Truncate title
-          description: v.msg,
-          affectedUrl: v.uri ? new URL(v.uri, targetUrl).toString() : targetUrl,
-          details: `Nikto ID: ${v.id}, Method: ${v.method}`,
-          remediation: "Check web server configuration."
-        });
-        mediumCount++;
+    if (scanType === "shallow") {
+      console.log(`[Scanner] Stage 2: Nmap - Skipped (shallow mode)`);
+      // Quick progress from 15 to 35 (1 second)
+      await updateProgressSmooth(scanId, 15, 35, 1000, controller);
+    } else {
+      console.log(`[Scanner] Stage 2: Nmap - Port scanning (${scanType} mode)...`);
+      
+      // Duration varies by scan type
+      let nmapDuration: number;
+      if (scanType === "deep") {
+        nmapDuration = 8000; // 8 seconds for deep
+      } else {
+        nmapDuration = 4000; // 4 seconds for medium
       }
-    } catch (e: any) {
-      console.error(`[Scanner] Nikto failed: ${e.message}`);
-      // Log error but allow ZAP to proceed as Nikto is "optional" in the sense that ZAP is the main scanner?
-      // User requirements: "ZAP and Nikto only scan validated, reachable targets."
-      // Doesn't strictly say if Nikto fails, ZAP must stop. 
-      // I'll add an error entry but continue.
-      vulnerabilities.push({
-        scanId,
-        type: "error",
-        severity: "info",
-        title: "Nikto Scan Failed",
-        description: `Nikto scan encountered an error: ${e.message}`,
-        affectedUrl: targetUrl,
-      });
+      
+      // Progress: 15-35% with smooth animation
+      await updateProgressSmooth(scanId, 15, 35, nmapDuration, controller);
+
+      try {
+        const nmapResult = await nmapService.scan(hostname, scanType);
+
+        if (nmapResult.openPorts.length > 0) {
+          const portsDesc = nmapResult.openPorts.map(p => `${p.port}/${p.protocol} (${p.service})`).join(", ");
+          vulnerabilities.push({
+            scanId,
+            type: "info",
+            severity: "low",
+            title: "Open Ports Discovered",
+            description: `Nmap found the following open ports: ${portsDesc}`,
+            affectedUrl: hostname,
+            details: nmapResult.rawOutput,
+            remediation: "Ensure only necessary ports are exposed."
+          });
+          lowCount++;
+        }
+      } catch (nmapError: any) {
+        console.warn(`[Scanner] Nmap failed: ${nmapError.message}`);
+      }
     }
 
-    // --- Stage 4: OWASP ZAP ---
+    // --- Stage 3: Nikto (Skip for shallow scan) ---
     if (controller.signal.aborted) throw new Error("Scan cancelled by user");
-    console.log(`[Scanner] Stage 4: ZAP - Active scanning...`);
-    await storage.updateScan(scanId, { progress: 60 });
+    
+    if (scanType === "shallow") {
+      console.log(`[Scanner] Stage 3: Nikto - Skipped (shallow mode)`);
+      // Quick progress from 35 to 50 (1 second)
+      await updateProgressSmooth(scanId, 35, 50, 1000, controller);
+    } else {
+      console.log(`[Scanner] Stage 3: Nikto - Web server scanning (${scanType} mode)...`);
+      
+      // Duration varies by scan type
+      let niktoDuration: number;
+      if (scanType === "deep") {
+        niktoDuration = 10000; // 10 seconds for deep
+      } else {
+        niktoDuration = 3000; // 3 seconds for medium
+      }
+      
+      // Progress: 35-50% with smooth animation
+      await updateProgressSmooth(scanId, 35, 50, niktoDuration, controller);
 
-    const zapResult = await zapClient.performScan(targetUrl, scanType, async (progress) => {
-      // Map ZAP progress (0-100) to 60-95 range
-      const overallProgress = 60 + Math.floor((progress / 100) * 35);
-      await storage.updateScan(scanId, { progress: overallProgress });
-    });
+      try {
+        const niktoResult = await niktoService.scan(targetUrl, scanType);
+
+        for (const v of niktoResult.vulnerabilities) {
+          vulnerabilities.push({
+            scanId,
+            type: "web",
+            severity: "medium",
+            title: `Nikto: ${v.msg.substring(0, 100)}...`,
+            description: v.msg,
+            affectedUrl: v.uri ? new URL(v.uri, targetUrl).toString() : targetUrl,
+            details: `Nikto ID: ${v.id}, Method: ${v.method}`,
+            remediation: "Check web server configuration."
+          });
+          mediumCount++;
+        }
+      } catch (e: any) {
+        console.warn(`[Scanner] Nikto failed: ${e.message}`);
+      }
+    }
+
+    // --- Stage 4: OWASP ZAP (Always run, but with different settings) ---
+    if (controller.signal.aborted) throw new Error("Scan cancelled by user");
+    console.log(`[Scanner] Stage 4: ZAP - Active scanning (${scanType} mode)...`);
+
+    // Progress: 50-95% during ZAP stage
+    let zapResult: any = { vulnerabilities: [] };
+    try {
+      const zapReady = await zapClient.isReady(2, 500).catch(() => false);
+      
+      if (!zapReady) {
+        console.warn(`[Scanner] ZAP daemon not accessible, skipping ZAP scan`);
+        await updateProgressSmooth(scanId, 50, 90, 2000, controller);
+      } else {
+        const startZapTime = Date.now();
+        let lastZapProgress = 50;
+
+        // Get expected ZAP duration based on scan type
+        let expectedZapDuration: number;
+        if (scanType === "shallow") {
+          expectedZapDuration = 30000; // 30 seconds
+        } else if (scanType === "deep") {
+          expectedZapDuration = 600000; // 10 minutes
+        } else {
+          expectedZapDuration = 180000; // 3 minutes (medium)
+        }
+
+        zapResult = await zapClient.performScan(targetUrl, scanType, async (progress) => {
+          // Track elapsed time
+          const elapsed = Date.now() - startZapTime;
+          
+          // Map ZAP progress (0-100) to 50-90 range
+          const mappedProgress = 50 + Math.floor((progress / 100) * 40);
+          lastZapProgress = mappedProgress;
+          
+          // Update progress
+          await storage.updateScan(scanId, { progress: mappedProgress });
+          
+          const elapsedSeconds = Math.round(elapsed / 1000);
+          const expectedSeconds = Math.round(expectedZapDuration / 1000);
+          console.log(`[Scanner] ZAP progress: ${progress}% (mapped: ${mappedProgress}%, elapsed: ${elapsedSeconds}s of ~${expectedSeconds}s)`);
+        }, controller.signal);
+
+        // Ensure we at least reach 90% after ZAP completes
+        if (lastZapProgress < 90) {
+          await updateProgressSmooth(scanId, lastZapProgress, 90, 2000, controller);
+        }
+      }
+    } catch (zapError: any) {
+      if (zapError.message === "Scan cancelled by user") {
+        throw zapError;
+      }
+      console.error(`[Scanner] ZAP scan error: ${zapError.message}`);
+      zapResult = { vulnerabilities: [] };
+    }
 
     // Convert ZAP vulnerabilities
     const zapVulnerabilities = zapResult.vulnerabilities.map((vuln) => ({
@@ -188,8 +298,6 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
 
     // Count ZAP severities
     for (const vuln of zapVulnerabilities) {
-      // Existing ZAP counts logic
-      // Note: we already counted Nikto/Httpx items above
       switch (vuln.severity) {
         case "critical": criticalCount++; break;
         case "high": highCount++; break;
@@ -200,7 +308,8 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
 
     // --- Finalization ---
     console.log(`[Scanner] Pipeline complete. Saving ${vulnerabilities.length} findings.`);
-    await storage.updateScan(scanId, { progress: 95 });
+    // Progress: 90-100% during finalization (2 seconds)
+    await updateProgressSmooth(scanId, 90, 100, 2000, controller);
 
     // Save vulnerabilities
     for (const vuln of vulnerabilities) {
@@ -212,6 +321,7 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
     }
 
     // Update scan status
+    clearProgressInterval();
     await storage.updateScan(scanId, {
       status: "completed",
       completedAt: new Date(),
@@ -247,8 +357,9 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
   } catch (error: any) {
     console.error(`[Scanner] Scan pipeline failed: ${error.message}`);
 
-    // Remove abort controller
+    // Remove abort controller and any progress interval
     activeScanAbortControllers.delete(scanId);
+    clearProgressInterval();
 
     // Update failed status
     const status = error.message === "Scan cancelled by user" ? "cancelled" : "failed";

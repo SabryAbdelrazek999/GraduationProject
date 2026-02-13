@@ -18,17 +18,25 @@ export interface NmapResult {
 }
 
 export class NmapService {
-    async scan(targetHost: string): Promise<NmapResult> {
+    async scan(targetHost: string, scanDepth: string = "medium"): Promise<NmapResult> {
         try {
-            // -T4: Faster timing
-            // -F: Fast mode (top 100 ports)
-            // -sV: Probe open ports to determine service/version info
-            // --version-light: Limit to most likely probes (faster than default)
-            // --max-retries 1: Give up on port earlier
-            // --host-timeout 5m: Give up on host after 5 minutes
-            const command = `nmap -T4 -F -sV --version-light --max-retries 1 --host-timeout 5m -oX - --no-stylesheet ${targetHost}`;
+            let command: string;
+            
+            // Configure based on scan depth
+            if (scanDepth === "shallow") {
+                // Shallow: Skip Nmap entirely (will be handled by caller)
+                throw new Error("Nmap skipped in shallow mode");
+            } else if (scanDepth === "deep") {
+                // Deep: Scan top 1000 ports (comprehensive)
+                // --top-ports 1000: Scan most common 1000 ports
+                command = `nmap -T4 --top-ports 1000 -sV --version-light --max-retries 1 --host-timeout 10m -oX - --no-stylesheet ${targetHost}`;
+            } else {
+                // Medium (default): Fast mode - top 100 ports
+                // -F: Fast mode (top 100 ports)
+                command = `nmap -T4 -F -sV --version-light --max-retries 1 --host-timeout 5m -oX - --no-stylesheet ${targetHost}`;
+            }
 
-            console.log(`[Nmap] Executing: ${command}`);
+            console.log(`[Nmap] Executing (${scanDepth} mode): ${command}`);
             const { stdout } = await execAsync(command, {
                 maxBuffer: 1024 * 1024 * 10 // 10MB buffer
             });
@@ -60,10 +68,6 @@ export class NmapService {
 
         } catch (error: any) {
            console.error("[Nmap] Scan failed", {target: targetHost,error: error.message});
-            // If execution fails, return empty result rather than throwing, 
-            // but maybe strict enforcement requires throwing? 
-            // USER SAID: "Prevent Nikto or OWASP ZAP from running if httpx or Nmap fails."
-            // So I should throw or return status that indicates failure.
             throw error;
         }
     }

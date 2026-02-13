@@ -24,6 +24,7 @@ export default function Login() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
+        credentials: 'include',
       });
 
       const data = await response.json();
@@ -65,7 +66,7 @@ export default function Login() {
           <div className="flex justify-center mb-4">
             <Shield className="w-10 h-10 text-primary" />
           </div>
-          <CardTitle className="text-2xl">ZAP Scanner</CardTitle>
+          <CardTitle className="text-2xl">valunabrity Scanner</CardTitle>
           <CardDescription>Sign in to your account</CardDescription>
         </CardHeader>
         <CardContent>

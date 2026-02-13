@@ -96,6 +96,12 @@ export default function ScanDetails() {
           <div>
             <h1 className="text-2xl font-semibold text-foreground">Scan Details</h1>
             <p className="text-sm text-muted-foreground font-mono">{scanData.targetUrl}</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              <span className="uppercase text-xs font-semibold mr-2">Type:</span>
+              <span className="font-medium">
+                {scanData.scanType ? scanData.scanType.charAt(0).toUpperCase() + scanData.scanType.slice(1) : "Unknown"}
+              </span>
+            </p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -154,18 +160,30 @@ export default function ScanDetails() {
             <TabsContent value="findings">
               {(scanData.status === "running" || scanData.status === "pending") && (() => {
                 const progress = scanData.progress ?? 0;
+                const getDetailedStage = (p: number) => {
+                  if (p === 0) return "Initializing...";
+                  if (p > 0 && p <= 10) return "Validating Target (Httpx)";
+                  if (p > 10 && p <= 25) return "Port Scanning (Nmap)";
+                  if (p > 25 && p <= 40) return "Web Server Scanning (Nikto)";
+                  if (p > 40 && p <= 95) {
+                    // Breaking down ZAP scanning into substages for better clarity
+                    const zapProgress = p - 40; // 0-55%
+                    if (zapProgress <= 15) return "🔍 ZAP: Spider crawling pages...";
+                    if (zapProgress <= 30) return "🔐 ZAP: Testing low severity vulnerabilities...";
+                    if (zapProgress <= 45) return "⚠️ ZAP: Deep scanning for medium vulnerabilities...";
+                    return "🔴 ZAP: High severity scanning (may take longer)...";
+                  }
+                  if (p > 95) return "Finalizing Results...";
+                  return "";
+                };
+                
                 return (
                   <div className="space-y-4 mb-6">
                     <div className="flex justify-between items-end text-sm">
                       <div className="space-y-1">
                         <span className="text-muted-foreground block text-xs uppercase tracking-wider font-semibold">Current Stage</span>
                         <span className="font-medium">
-                          {progress === 0 && "Initializing..."}
-                          {progress > 0 && progress <= 10 && "Validating Target (Httpx)"}
-                          {progress > 10 && progress <= 25 && "Port Scanning (Nmap)"}
-                          {progress > 25 && progress <= 40 && "Web Server Scanning (Nikto)"}
-                          {progress > 40 && progress <= 95 && "Active Security Scanning (ZAP)"}
-                          {progress > 95 && "Finalizing Results..."}
+                          {getDetailedStage(progress)}
                         </span>
                       </div>
                       <span className="font-mono font-bold text-primary">{progress}%</span>

@@ -7,12 +7,12 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import AppSidebar from "@/components/AppSidebar";
 import UserMenu from "@/components/UserMenu";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { ScanProvider } from "@/lib/scan-context";
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/Home";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import Dashboard from "@/pages/Dashboard";
 import ScanNow from "@/pages/ScanNow";
 import ScanDetails from "@/pages/ScanDetails";
 import Scheduling from "@/pages/Scheduling";
@@ -56,7 +56,6 @@ function ProtectedRouter() {
           <main className="flex-1 overflow-auto bg-background">
             <Switch>
               <Route path="/" component={Home} />
-              <Route path="/dashboard" component={Dashboard} />
               <Route path="/scan" component={ScanNow} />
               <Route path="/compare" component={CompareScans} />
               <Route path="/scans/:id" component={ScanDetails} />
@@ -70,7 +69,7 @@ function ProtectedRouter() {
             </Switch>
           </main>
           <footer className="px-4 py-2 border-t border-border bg-background">
-            <p className="text-xs text-muted-foreground text-center">Version 1.2025 ZAP Scanner</p>
+            <p className="text-xs text-muted-foreground text-center">Version 1.2025 Vulnerability Scanner</p>
           </footer>
         </div>
       </div>
@@ -84,8 +83,10 @@ function App() {
       <ThemeProvider defaultTheme="dark" storageKey="zap-scanner-theme">
         <TooltipProvider>
           <AuthProvider>
-            <ProtectedRouter />
-            <Toaster />
+            <ScanProvider>
+              <ProtectedRouter />
+              <Toaster />
+            </ScanProvider>
           </AuthProvider>
         </TooltipProvider>
       </ThemeProvider>

@@ -9,7 +9,8 @@ import {
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
+import pg from "pg";
+const { Pool } = pg;
 import { eq, sql } from "drizzle-orm";
 
 export interface IStorage {
@@ -20,6 +21,7 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   createGoogleUser(googleId: string, email: string, username: string, avatar?: string): Promise<User>;
   updateUserApiKey(id: string, apiKey: string): Promise<User | undefined>;
+  updateUser(id: string, updates: Partial<User>): Promise<User | undefined>;
   deleteUser(id: string): Promise<boolean>;
 
   // Scans
@@ -139,6 +141,14 @@ export class MemStorage implements IStorage {
       this.users.set(id, user);
     }
     return user;
+  }
+
+  async updateUser(id: string, updates: Partial<User>): Promise<User | undefined> {
+    const user = this.users.get(id);
+    if (!user) return undefined;
+    const updated: User = { ...user, ...updates } as User;
+    this.users.set(id, updated);
+    return updated;
   }
 
   async deleteUser(id: string): Promise<boolean> {
@@ -453,6 +463,15 @@ export class DbStorage implements IStorage {
 
   async updateUserApiKey(id: string, apiKey: string): Promise<User | undefined> {
     const result = await this.db.update(users).set({ apiKey }).where(eq(users.id, id)).returning();
+    return result[0];
+  }
+
+  async updateUser(id: string, updates: Partial<User>): Promise<User | undefined> {
+    const toSet: Partial<User> = {};
+    if (updates.username !== undefined) toSet.username = updates.username;
+    if (updates.password !== undefined) toSet.password = updates.password;
+    if (Object.keys(toSet).length === 0) return this.getUser(id);
+    const result = await this.db.update(users).set(toSet as any).where(eq(users.id, id)).returning();
     return result[0];
   }
 

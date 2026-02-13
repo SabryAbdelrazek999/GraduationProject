@@ -1,10 +1,17 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Search, Play, Loader2, CheckCircle, AlertTriangle, X } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useScan } from "@/lib/scan-context";
+import type { Scan } from "@shared/schema";
+
+import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -12,33 +19,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, Play, Loader2, Globe, Shield, Zap, CheckCircle, AlertTriangle, X } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Scan } from "@shared/schema";
-
-import { Progress } from "@/components/ui/progress";
 
 export default function ScanNow() {
   const [url, setUrl] = useState("");
-  const [scanType, setScanType] = useState("quick");
-  const [activeScanId, setActiveScanId] = useState<string | null>(null);
-  const [isCanceling, setIsCanceling] = useState(false);
+  const { activeScanId, setActiveScanId, activeScan, isCanceling, setIsCanceling, formattedETA, displayedProgress } = useScan();
   const { toast } = useToast();
 
   const { data: recentScans } = useQuery<Scan[]>({
     queryKey: ["/api/scans/recent"],
   });
 
-  const { data: activeScan, isLoading: scanLoading } = useQuery<Scan & { vulnerabilities: any[] }>({
-    queryKey: ["/api/scans", activeScanId],
-    enabled: !!activeScanId,
-    refetchInterval: (data) => {
-      const status = data?.state?.data?.status;
-      if (status === "running" || status === "pending" || status === "cancelled") {
-        return 1000; // Faster refresh when cancelling
-      }
-      return false;
+  const { data: settings } = useQuery<{ scanDepth: string } | null>({
+    queryKey: ["/api/settings"],
+  });
+
+  const [scanDepth, setScanDepth] = useState<string>("medium");
+
+  useEffect(() => {
+    if (settings && settings.scanDepth) setScanDepth(settings.scanDepth);
+  }, [settings]);
+
+  const persistSettingsMutation = useMutation({
+    mutationFn: async (updates: any) => apiRequest("PATCH", "/api/settings", updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
     },
   });
 
@@ -67,13 +71,24 @@ export default function ScanNow() {
 
   const cancelMutation = useMutation({
     mutationFn: async (scanId: string) => {
-      try {
-        const response = await apiRequest("POST", `/api/scans/${scanId}/cancel`, {});
-        return response;
-      } catch (error: any) {
-        console.error("Cancel error:", error);
-        throw error;
-      }
+      // retry on 429 up to 3 attempts with exponential backoff
+      const attempt = async (triesLeft: number, delayMs: number): Promise<any> => {
+        try {
+          return await apiRequest("POST", `/api/scans/${scanId}/cancel`, {});
+        } catch (err: any) {
+          const msg = err?.message || "";
+          // crude check for 429 in message like "429: ..."
+          if (triesLeft > 0 && /^429\b/.test(msg)) {
+            // wait delayMs then retry
+            await new Promise((res) => setTimeout(res, delayMs));
+            return attempt(triesLeft - 1, delayMs * 2);
+          }
+          console.error("Cancel error:", err);
+          throw err;
+        }
+      };
+
+      return attempt(3, 1000);
     },
     onSuccess: () => {
       setIsCanceling(false);
@@ -105,18 +120,19 @@ export default function ScanNow() {
       targetUrl = "https://" + url;
     }
 
-    scanMutation.mutate({ targetUrl, scanType });
+    // Use the selected scan depth as scanType (shallow|medium|deep)
+    scanMutation.mutate({ targetUrl, scanType: scanDepth });
   };
 
   const handleCancelScan = () => {
-    if (activeScanId) {
-      setIsCanceling(true);
-      cancelMutation.mutate(activeScanId);
-    }
+    if (!activeScanId) return;
+    setIsCanceling(true);
+    // call mutation; the mutation function will handle retries for 429
+    cancelMutation.mutate(activeScanId);
   };
 
   const recentUrls = Array.from(new Set((recentScans || []).map(s => s.targetUrl))).slice(0, 5);
-  const isScanning = scanMutation.isPending || (activeScan && (activeScan.status === "running" || activeScan.status === "pending"));
+  const isScanning = activeScan && (activeScan.status === "running" || activeScan.status === "pending");
 
   return (
     <div className="p-6 space-y-6" data-testid="page-scan-now">
@@ -129,7 +145,7 @@ export default function ScanNow() {
             Start New Scan
           </CardTitle>
           <CardDescription>
-            Enter the target URL and select scan type to begin vulnerability assessment
+            Enter the target URL to begin vulnerability assessment
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -147,11 +163,11 @@ export default function ScanNow() {
               />
               <Button
                 onClick={handleStartScan}
-                disabled={isScanning}
+                disabled={isScanning || scanMutation.isPending}
                 className="h-12 px-6"
                 data-testid="button-start-scan"
               >
-                {isScanning ? (
+                {isScanning || scanMutation.isPending ? (
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                     Scanning...
@@ -166,33 +182,22 @@ export default function ScanNow() {
             </div>
           </div>
 
+          {/* Scan type selection - uses user settings and persists on change */}
           <div className="space-y-2">
-            <Label htmlFor="scan-type">Scan Type</Label>
-            <Select value={scanType} onValueChange={setScanType}>
-              <SelectTrigger className="w-full md:w-64" data-testid="select-scan-type">
-                <SelectValue placeholder="Select scan type" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="quick">
-                  <div className="flex items-center gap-2">
-                    <Zap className="w-4 h-4" />
-                    Quick Scan
-                  </div>
-                </SelectItem>
-                <SelectItem value="deep">
-                  <div className="flex items-center gap-2">
-                    <Shield className="w-4 h-4" />
-                    Deep Scan
-                  </div>
-                </SelectItem>
-                <SelectItem value="full">
-                  <div className="flex items-center gap-2">
-                    <Globe className="w-4 h-4" />
-                    Full Scan
-                  </div>
-                </SelectItem>
-              </SelectContent>
-            </Select>
+            <Label>Scan Type</Label>
+            <div className="flex items-center gap-3">
+              <Select value={scanDepth} onValueChange={(v) => { setScanDepth(v); persistSettingsMutation.mutate({ scanDepth: v }); }}>
+                <SelectTrigger className="w-64">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="shallow">Shallow - Quick scan</SelectItem>
+                  <SelectItem value="medium">Medium - Standard scan</SelectItem>
+                  <SelectItem value="deep">Deep - Comprehensive scan</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="text-sm text-muted-foreground">Current: <span className="font-medium ml-1">{scanDepth}</span></div>
+            </div>
           </div>
 
           {recentUrls.length > 0 && (
@@ -247,10 +252,30 @@ export default function ScanNow() {
                 <div className="flex justify-between items-center">
                   <div className="flex-1">
                     <div className="flex justify-between text-sm mb-2">
-                      <span>Progress</span>
-                      <span>{activeScan.progress || 0}%</span>
+                      <span>
+                        Progress
+                        {formattedETA ? (
+                          <span className="ml-3 text-xs text-muted-foreground">Estimated: {formattedETA}</span>
+                        ) : null}
+                      </span>
+                      <span>{displayedProgress}%</span>
                     </div>
-                    <Progress value={activeScan.progress || 0} className="h-2" />
+                    <Progress value={displayedProgress} className="h-2" />
+                    <div className="mt-3 text-xs text-muted-foreground">
+                      {displayedProgress === 0 && "Initializing..."}
+                      {displayedProgress > 0 && displayedProgress <= 10 && "Validating Target (Httpx)"}
+                      {displayedProgress > 10 && displayedProgress <= 25 && "Port Scanning (Nmap)"}
+                      {displayedProgress > 25 && displayedProgress <= 40 && "Web Server Scanning (Nikto)"}
+                      {displayedProgress > 40 && displayedProgress <= 95 && (
+                        <>
+                          {displayedProgress <= 55 && "🔍 ZAP: Spider crawling pages..."}
+                          {displayedProgress > 55 && displayedProgress <= 70 && "🔐 ZAP: Testing low severity vulnerabilities..."}
+                          {displayedProgress > 70 && displayedProgress <= 85 && "⚠️ ZAP: Deep scanning for medium vulnerabilities..."}
+                          {displayedProgress > 85 && "🔴 ZAP: High severity scanning (may take longer)..."}
+                        </>
+                      )}
+                      {displayedProgress > 95 && "Finalizing Results..."}
+                    </div>
                   </div>
                   <Button
                     onClick={handleCancelScan}

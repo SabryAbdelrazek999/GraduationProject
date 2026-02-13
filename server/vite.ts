@@ -31,7 +31,13 @@ export async function setupVite(server: Server, app: Express) {
 
   app.use(vite.middlewares);
 
+  // Serve React SPA for non-API routes
   app.use("*", async (req, res, next) => {
+    // Skip API routes - let them be handled by Express routes
+    if (req.originalUrl.startsWith("/api/") || req.originalUrl.startsWith("/.well-known/")) {
+      return next();
+    }
+
     const url = req.originalUrl;
 
     try {

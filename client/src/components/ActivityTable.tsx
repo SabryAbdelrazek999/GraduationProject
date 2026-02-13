@@ -33,8 +33,8 @@ export default function ActivityTable({ activities, onViewSource }: ActivityTabl
         <tr className="bg-gray-800 text-left">
           <th className="p-2 border border-gray-600">#</th>
           <th className="p-2 border border-gray-600">Target</th>
-          <th className="p-2 border border-gray-600">Scan Type</th>
-          <th className="p-2 border border-gray-600">Completed</th>
+          <th className="p-2 border border-gray-600">Type</th>
+          <th className="p-2 border border-gray-600">Completed Date</th>
           <th className="p-2 border border-gray-600">Vulnerabilities</th>
           <th className="p-2 border border-gray-600">Action</th>
         </tr>
@@ -51,9 +51,21 @@ export default function ActivityTable({ activities, onViewSource }: ActivityTabl
             <tr key={scan.id} className="hover:bg-gray-900">
               <td className="p-2 border border-gray-600">{index + 1}</td>
               <td className="p-2 border border-gray-600">{scan.targetUrl}</td>
-              <td className="p-2 border border-gray-600">{scan.scanType}</td>
-              <td className="p-2 border border-gray-600">
-                {scan.completedAt ? new Date(scan.completedAt).toLocaleString() : "Pending"}
+              <td className="p-2 border border-gray-600 whitespace-nowrap">
+                {scan.scanType ? (
+                  scan.scanType.charAt(0).toUpperCase() + scan.scanType.slice(1)
+                ) : (
+                  "Unknown"
+                )}
+              </td>
+              <td className="p-2 border border-gray-600 whitespace-nowrap">
+                {scan.completedAt ? new Date(scan.completedAt).toLocaleString("en-US", { 
+                  year: "numeric", 
+                  month: "short", 
+                  day: "numeric", 
+                  hour: "2-digit", 
+                  minute: "2-digit" 
+                }) : "Pending"}
               </td>
               <td className="p-2 border border-gray-600">
                 <div className="w-full h-4 bg-gray-700 rounded overflow-hidden flex">

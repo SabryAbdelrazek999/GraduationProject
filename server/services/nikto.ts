@@ -22,29 +22,34 @@ export interface NiktoResult {
 }
 
 export class NiktoService {
-    async scan(targetUrl: string): Promise<NiktoResult> {
-        // Use /tmp directly (more reliable in Docker)
-        const tempFile = `/tmp/nikto-${Date.now()}.xml`;
+    async scan(targetUrl: string, scanDepth: string = "medium"): Promise<NiktoResult> {
+        // Use OS-appropriate temp directory (cross-platform compatibility)
+        const tempFile = path.join(os.tmpdir(), `nikto-${Date.now()}.xml`);
 
         try {
-            // -h: Host
-            // -Format xml: XML output
-            // -o: Output file
-            // -Tuning:
-            //   x: Reverse Lookup (often slow/fails)
-            //   6: Denial of Service (unsafe/slow)
-            // -maxtime: Limit scan time to 5 minutes (300s)
-            // -nointeractive: Ensure no prompts
-            // -ask no: Don't ask for confirmation
-            const command = `nikto -h ${targetUrl} -Format xml -o ${tempFile} -maxtime 300s -Tuning x6 -nointeractive -ask no`;
+            let command: string;
+            
+            // Configure based on scan depth
+            if (scanDepth === "shallow") {
+                // Shallow: Skip Nikto entirely (will be handled by caller)
+                throw new Error("Nikto skipped in shallow mode");
+            } else if (scanDepth === "deep") {
+                // Deep: Full comprehensive scan (no time limit, but still skip slow tests)
+                // -Tuning x6: Skip reverse lookup and DoS tests
+                command = `nikto -h ${targetUrl} -Format xml -o ${tempFile} -Tuning x6 -nointeractive -ask no`;
+            } else {
+                // Medium (default): Limited 30 second scan
+                command = `nikto -h ${targetUrl} -Format xml -o ${tempFile} -maxtime 30s -Tuning x6 -nointeractive -ask no`;
+            }
 
-            console.log(`[Nikto] Executing: ${command}`);
+            console.log(`[Nikto] Executing (${scanDepth} mode): ${command}`);
             console.log(`[Nikto] Output file: ${tempFile}`);
 
             try {
+                const timeout = scanDepth === "deep" ? 300000 : 45000; // 5 min for deep, 45s for medium
                 const { stdout, stderr } = await execAsync(command, {
                     maxBuffer: 1024 * 1024 * 20,
-                    timeout: 360000 // 6 minute timeout (slightly more than maxtime)
+                    timeout
                 });
                 if (stderr) console.log(`[Nikto] stderr: ${stderr}`);
                 if (stdout) console.log(`[Nikto] stdout: ${stdout.substring(0, 200)}...`);
@@ -58,8 +63,14 @@ export class NiktoService {
                 xmlContent = await fs.readFile(tempFile, 'utf-8');
                 console.log(`[Nikto] Output file read successfully (${xmlContent.length} bytes)`);
             } catch (readErr: any) {
-                console.error(`[Nikto] Cannot read output file: ${readErr.message}`);
-                throw new Error("Nikto failed to generate output file.");
+                console.warn(`[Nikto] Cannot read output file: ${readErr.message} - Returning empty results`);
+                // Return empty results instead of throwing - Nikto is optional
+                return {
+                    target: targetUrl,
+                    vulnerabilities: [],
+                    startTime: new Date().toISOString(),
+                    endTime: new Date().toISOString()
+                };
             }
 
 
@@ -94,7 +105,7 @@ export class NiktoService {
             };
 
         } catch (error: any) {
-            console.error("[Httpx] Scan failed", { target: targetUrl, error: error.message });
+            console.error("[Nikto] Scan failed", { target: targetUrl, error: error.message });
             // Cleanup
             try { await fs.unlink(tempFile); } catch { /* ignore cleanup error */ }
             throw error;

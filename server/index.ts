@@ -33,13 +33,19 @@ app.use(cookieParser());
 
 // Security Middleware
 app.use(helmet());
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 
 // Rate Limiting (100 requests per 15 minutes)
+// Skip rate limiting for ZAP scanner requests
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  message: "Too many requests from this IP, please try again later."
+  message: "Too many requests from this IP, please try again later.",
+  skip: (req) => {
+    // Skip rate limiting for ZAP scanner User-Agent
+    const userAgent = req.get('user-agent') || '';
+    return userAgent.toLowerCase().includes('zap');
+  }
 });
 app.use(limiter);
 
@@ -105,14 +111,14 @@ app.use((req, res, next) => {
   }
 
   const port = parseInt(process.env.PORT || "5000", 10);
+  const host = process.env.NODE_ENV === "production" ? "0.0.0.0" : "localhost";
   httpServer.listen(
     {
       port,
-      host: "0.0.0.0",
-      reusePort: true,
+      host,
     },
     () => {
-      log(`serving on port ${port}`);
+      log(`serving on host ${host} port ${port}`);
     },
   );
 })();

@@ -8,13 +8,6 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -25,7 +18,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Key, Bell, Shield, Save, Copy, Check, Trash2, User as UserIcon, AlertCircle } from "lucide-react";
+import { Bell, Eye, EyeOff, Users, Save } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -34,11 +27,13 @@ import type { Settings as SettingsType } from "@shared/schema";
 export default function Settings() {
   const { user, logout } = useAuth();
   const { toast } = useToast();
-  const [copied, setCopied] = useState(false);
+  const { refreshAuth } = useAuth();
+  const [showChangeDialog, setShowChangeDialog] = useState(false);
+  const [editUsername, setEditUsername] = useState<string>(user?.username || "");
+  const [editPassword, setEditPassword] = useState("");
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [confirmUsername, setConfirmUsername] = useState("");
   const [localSettings, setLocalSettings] = useState({
-    scanDepth: "medium",
-    autoScan: false,
     emailNotifications: true,
   });
 
@@ -49,8 +44,6 @@ export default function Settings() {
   useEffect(() => {
     if (settings) {
       setLocalSettings({
-        scanDepth: settings.scanDepth || "medium",
-        autoScan: settings.autoScan || false,
         emailNotifications: settings.emailNotifications ?? true,
       });
     }
@@ -77,20 +70,6 @@ export default function Settings() {
     },
   });
 
-  const regenerateKeyMutation = useMutation({
-    mutationFn: async () => {
-      const response = await apiRequest("POST", "/api/settings/regenerate-key");
-      return response;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
-      toast({
-        title: "API Key Regenerated",
-        description: "Your new API key has been generated",
-      });
-    },
-  });
-
   const deleteAccountMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("DELETE", "/api/auth/delete-account");
@@ -112,20 +91,28 @@ export default function Settings() {
     },
   });
 
+  const updateAccountMutation = useMutation({
+    mutationFn: async (data: { username?: string; password?: string }) => {
+      const response = await apiRequest("PATCH", "/api/auth/update", data);
+      return response;
+    },
+    onSuccess: async () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      toast({ title: "Account Updated", description: "Your account details were updated." });
+      setEditPassword("");
+      try {
+        await refreshAuth();
+      } catch (e) {
+        // ignore
+      }
+    },
+    onError: (error: any) => {
+      toast({ title: "Error", description: error?.message || "Failed to update account", variant: "destructive" });
+    },
+  });
+
   const handleSaveSettings = () => {
     updateMutation.mutate(localSettings);
-  };
-
-  const handleCopyKey = () => {
-    if (settings?.apiKey) {
-      navigator.clipboard.writeText(settings.apiKey);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-      toast({
-        title: "Copied",
-        description: "API key copied to clipboard",
-      });
-    }
   };
 
   if (isLoading) {
@@ -144,59 +131,10 @@ export default function Settings() {
       <h1 className="text-2xl font-semibold text-foreground">Settings</h1>
 
       <div className="grid gap-6">
-        <Card className="bg-card border-card-border">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Key className="w-5 h-5 text-primary" />
-              API Configuration
-            </CardTitle>
-            <CardDescription>
-              Your unique API key protects your reports and scans from unauthorized access
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="bg-muted/50 border border-primary/20 rounded-lg p-3 text-sm text-muted-foreground">
-              Your API key is required to access and download your vulnerability reports. Keep it private and never share it publicly.
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="api-key">Your API Key (Private)</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="api-key"
-                  type="password"
-                  value={settings?.apiKey || ""}
-                  readOnly
-                  className="font-mono"
-                  data-testid="input-api-key"
-                />
-                <Button
-                  variant="secondary"
-                  size="icon"
-                  onClick={handleCopyKey}
-                  data-testid="button-copy-key"
-                >
-                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => regenerateKeyMutation.mutate()}
-                  disabled={regenerateKeyMutation.isPending}
-                  data-testid="button-regenerate-key"
-                >
-                  Regenerate
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Use this key to authenticate API requests
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
         <Card className="bg-card border-card-border border-destructive/20">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-destructive">
-              <UserIcon className="w-5 h-5" />
+              <Users className="w-5 h-5" />
               Account Management
             </CardTitle>
             <CardDescription>
@@ -204,36 +142,92 @@ export default function Settings() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div className="flex items-center justify-between">
+            <div className="space-y-4">
               <div>
                 <Label>Username</Label>
-                <p className="text-sm font-medium mt-1">{user?.username || "Loading..."}</p>
-              </div>
-              <Button variant="outline" size="sm" onClick={() => logout()}>
-                Sign Out
-              </Button>
-            </div>
-
-            <Separator />
-
-            <div className="space-y-4">
-              <div className="bg-destructive/5 border border-destructive/20 rounded-lg p-4 space-y-3">
-                <div className="flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-destructive mt-0.5" />
-                  <div>
-                    <p className="font-semibold text-destructive">Danger Zone</p>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Deleting your account will permanently remove all your scans, reports, and settings. This action cannot be undone.
-                    </p>
-                  </div>
+                <div className="flex items-center gap-3 mt-1">
+                  <Input
+                    type="text"
+                    value={user?.username || ""}
+                    readOnly
+                    className="bg-muted"
+                  />
                 </div>
+              </div>
+
+              <div>
+                <Label>Password</Label>
+                <Input
+                  type="password"
+                  value="••••••••"
+                  readOnly
+                  className="mt-1 bg-muted"
+                />
+              </div>
+
+              <div className="flex gap-3 justify-end">
+                <AlertDialog open={showChangeDialog} onOpenChange={setShowChangeDialog}>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="outline">Change</Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Change Username or Password</AlertDialogTitle>
+                    </AlertDialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="edit-username">Username</Label>
+                        <Input
+                          id="edit-username"
+                          value={editUsername}
+                          onChange={(e) => setEditUsername(e.target.value)}
+                          placeholder={user?.username || "Username"}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="edit-password">New Password (leave empty to keep current)</Label>
+                        <div className="flex gap-2">
+                          <Input
+                            id="edit-password"
+                            type={showNewPassword ? "text" : "password"}
+                            value={editPassword}
+                            onChange={(e) => setEditPassword(e.target.value)}
+                            placeholder="••••••••"
+                            className="flex-1"
+                            autoComplete="new-password"
+                          />
+                          <Button
+                            variant="secondary"
+                            size="icon"
+                            onClick={() => setShowNewPassword((s) => !s)}
+                            aria-label={showNewPassword ? "Hide password" : "Show password"}
+                          >
+                            {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel onClick={() => { setEditUsername(user?.username || ""); setEditPassword(""); }}>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => {
+                          updateAccountMutation.mutate({ 
+                            username: editUsername !== user?.username ? editUsername : undefined, 
+                            password: editPassword || undefined 
+                          });
+                          setShowChangeDialog(false);
+                        }}
+                        disabled={updateAccountMutation.isPending || (!editPassword && editUsername === user?.username)}
+                      >
+                        {updateAccountMutation.isPending ? "Saving..." : "Save Changes"}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
 
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="destructive" className="w-full sm:w-auto">
-                      <Trash2 className="w-4 h-4 mr-2" />
-                      Delete My Account
-                    </Button>
+                    <Button variant="destructive">Delete</Button>
                   </AlertDialogTrigger>
                   <AlertDialogContent>
                     <AlertDialogHeader>
@@ -268,55 +262,12 @@ export default function Settings() {
                 </AlertDialog>
               </div>
             </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-card border-card-border">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Shield className="w-5 h-5 text-primary" />
-              Scan Settings
-            </CardTitle>
-            <CardDescription>
-              Configure default scanning behavior
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="space-y-2">
-              <Label>Default Scan Depth</Label>
-              <Select
-                value={localSettings.scanDepth}
-                onValueChange={(value) => setLocalSettings(prev => ({ ...prev, scanDepth: value }))}
-              >
-                <SelectTrigger className="w-full md:w-64" data-testid="select-scan-depth">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="shallow">Shallow - Quick scan</SelectItem>
-                  <SelectItem value="medium">Medium - Standard scan</SelectItem>
-                  <SelectItem value="deep">Deep - Comprehensive scan</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
 
             <Separator />
-
-            <div className="flex items-center justify-between">
-              <div>
-                <Label htmlFor="auto-scan">Auto-scan new URLs</Label>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Automatically start scanning when a new URL is added
-                </p>
-              </div>
-              <Switch
-                id="auto-scan"
-                checked={localSettings.autoScan}
-                onCheckedChange={(checked) => setLocalSettings(prev => ({ ...prev, autoScan: checked }))}
-                data-testid="switch-auto-scan"
-              />
-            </div>
           </CardContent>
         </Card>
+
+        {/* Scan settings removed — scan configuration lives on the Scan page (ScanNow). */}
 
         <Card className="bg-card border-card-border">
           <CardHeader>

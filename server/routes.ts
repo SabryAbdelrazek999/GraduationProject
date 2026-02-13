@@ -175,6 +175,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.patch("/api/auth/update", authenticateToken, async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ error: "Not authenticated" });
+
+      const { username, password } = req.body;
+      if (!username && !password) return res.status(400).json({ error: "No updates provided" });
+
+      const updates: any = {};
+      if (username) updates.username = username;
+      if (password) {
+        if (typeof password !== "string" || password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
+        const hashed = await bcrypt.hash(password, 10);
+        updates.password = hashed;
+      }
+
+      const updated = await storage.updateUser(userId, updates);
+      if (!updated) return res.status(500).json({ error: "Failed to update user" });
+
+      res.json({ user: { id: updated.id, username: updated.username } });
+    } catch (error) {
+      console.error("Update user error:", error);
+      res.status(500).json({ error: "Failed to update user" });
+    }
+  });
+
   // ----------- Stats & Dashboard -----------
   app.get("/api/stats", authenticateToken, async (req, res) => {
     try {

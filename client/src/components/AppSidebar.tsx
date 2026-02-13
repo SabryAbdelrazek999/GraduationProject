@@ -13,7 +13,6 @@ import {
 } from "@/components/ui/sidebar";
 import {
   Home,
-  LayoutDashboard,
   Search,
   Calendar,
   FileText,
@@ -27,7 +26,6 @@ import ZapLogo from "./ZapLogo";
 
 const mainMenuItems = [
   { title: "Home", url: "/", icon: Home },
-  { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
   { title: "Scan Now", url: "/scan", icon: Search },
   { title: "Scheduling", url: "/scheduling", icon: Calendar },
   { title: "Reports", url: "/reports", icon: FileText },
@@ -96,7 +94,7 @@ export default function AppSidebar() {
       </SidebarContent>
       <SidebarFooter className="p-4">
         <p className="text-xs text-muted-foreground text-center">
-          ZAP Scanner v1.2025
+          Vulnerability Scanner v1.2025
         </p>
       </SidebarFooter>
     </Sidebar>
