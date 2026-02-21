@@ -228,6 +228,43 @@ Or with Docker:
 docker-compose up --build
 ```
 
+## Troubleshooting
+
+### Deep Scan Issues
+
+**Problem:** Deep scan completes but shows no vulnerabilities
+
+**Solutions:**
+1. **Check ZAP is running:**
+   ```bash
+   docker logs zap_daemon
+   ```
+
+2. **Test ZAP API directly:**
+   ```bash
+   curl http://localhost:8081/JSON/core/view/alerts
+   ```
+
+3. **Increase timeouts** if scanning large websites:
+   - Deep scans need up to **2 hours** for thorough scanning
+   - Monitor progress in the UI or logs
+
+4. **Clear ZAP session** if previous scan had issues:
+   ```bash
+   curl http://localhost:8081/JSON/core/action/newSession?overwrite=true
+   ```
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| "ZAP daemon not ready" | Wait 30s for ZAP to start, then retry |
+| Scan timeout on large sites | Use Medium scan instead of Deep |
+| No results found | Check ZAP logs: `docker logs zap_daemon` |
+| Empty alerts | Wait longer, ZAP may still be processing |
+
+**[See DEEP_SCAN_FIXES.md](DEEP_SCAN_FIXES.md) for detailed Deep scan improvements**
+
 ## License
 
 Designed for security research and vulnerability assessment.

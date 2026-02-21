@@ -37,7 +37,7 @@ import { useLocation } from "wouter";
 export default function Reports() {
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
-  const [severityFilter, setSeverityFilter] = useState("all");
+  const [scanTypeFilter, setScanTypeFilter] = useState("all");
   const [apiKey, setApiKey] = useState<string>("");
   const { toast } = useToast();
 
@@ -72,7 +72,8 @@ export default function Reports() {
 
   const filteredReports = (reports || []).filter((rep) => {
     const matchesSearch = rep.reportName.toLowerCase().includes(searchQuery.toLowerCase()) || (rep.reportPath || "").toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSearch;
+    const matchesScanType = scanTypeFilter === "all" || (rep as any).scanType === scanTypeFilter;
+    return matchesSearch && matchesScanType;
   });
 
   const handleDownloadReport = (reportPath: string, format: string = "json") => {
@@ -127,14 +128,15 @@ export default function Reports() {
                   data-testid="input-search-reports"
                 />
               </div>
-              <Select value={severityFilter} onValueChange={setSeverityFilter}>
-                <SelectTrigger className="w-40" data-testid="select-severity-filter">
+              <Select value={scanTypeFilter} onValueChange={setScanTypeFilter}>
+                <SelectTrigger className="w-40" data-testid="select-scan-type-filter">
                   <SelectValue placeholder="Filter" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Reports</SelectItem>
-                  <SelectItem value="critical">Critical Only</SelectItem>
-                  <SelectItem value="clean">Clean Only</SelectItem>
+                  <SelectItem value="shallow">Shallow Scans</SelectItem>
+                  <SelectItem value="medium">Medium Scans</SelectItem>
+                  <SelectItem value="deep">Deep Scans</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -152,18 +154,30 @@ export default function Reports() {
               <TableHeader>
                 <TableRow className="border-border">
                   <TableHead className="text-muted-foreground">Target / Report</TableHead>
+                  <TableHead className="text-muted-foreground">Scan Type</TableHead>
                   <TableHead className="text-muted-foreground">Date</TableHead>
                   <TableHead className="text-muted-foreground">Total</TableHead>
                   <TableHead className="text-muted-foreground">Critical</TableHead>
                   <TableHead className="text-muted-foreground">High</TableHead>
+                  <TableHead className="text-muted-foreground">Medium</TableHead>
                   <TableHead className="text-muted-foreground text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredReports.map((rep) => (
                   <TableRow key={rep.id} className="border-border" data-testid={`report-row-${rep.id}`}>
-                    <TableCell className="font-mono text-sm text-foreground max-w-xs truncate">
-                      {rep.reportName}
+                    <TableCell className="font-mono text-sm text-foreground max-w-xs">
+                      <div className="truncate">
+                        {rep.reportName
+                          ? rep.reportName.replace(/\s*-\s*https?:\/\/.*$/i, "")
+                          : "CyberShield Vulnerability Report"}
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1 break-words max-w-xs truncate">
+                        {(rep as any).targetUrl ? (rep as any).targetUrl : (rep.reportPath ?? "-")}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline">{(rep as any).scanType ? (rep as any).scanType.charAt(0).toUpperCase() + (rep as any).scanType.slice(1) : "Unknown"}</Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {rep.createdAt ? new Date(rep.createdAt).toLocaleString() : "-"}
@@ -176,6 +190,9 @@ export default function Reports() {
                     </TableCell>
                     <TableCell>
                       <Badge variant={rep.high && rep.high > 0 ? "destructive" : "secondary"}>{rep.high ?? 0}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={rep.medium && rep.medium > 0 ? "secondary" : "secondary"}>{rep.medium ?? 0}</Badge>
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1">

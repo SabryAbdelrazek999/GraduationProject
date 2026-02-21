@@ -258,7 +258,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const userId = getUserId(req);
       if (!userId) return res.status(401).json({ error: "Not authenticated" });
 
-      const limit = parseInt(req.query.limit as string) || 5;
+      const limit = Math.min(parseInt(req.query.limit as string) || 20, 20); // Max 15 scans
       const scans = await storage.getUserScans(userId);
       res.json(scans.slice(0, limit));
     } catch (error) {
@@ -456,20 +456,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const userId = getUserId(req);
       if (!userId) return res.status(401).json({ error: "Not authenticated" });
       const reports = await storage.getReportsByUser(userId);
-      // return minimal report metadata to the client
-      res.json(reports.map(r => ({
-        id: r.id,
-        userId: r.userId,
-        scanId: (r as any).scanId || null,
-        reportName: r.reportName,
-        reportPath: r.reportPath,
-        createdAt: r.createdAt,
-        total: (r as any).total ?? 0,
-        critical: (r as any).critical ?? 0,
-        high: (r as any).high ?? 0,
-        medium: (r as any).medium ?? 0,
-        low: (r as any).low ?? 0,
-      })));
+      // return minimal report metadata to the client, include scan target URL when available
+      const detailed = await Promise.all(reports.map(async (r: any) => {
+        let targetUrl: string | null = null;
+        const scanId = (r as any).scanId || null;
+        if (scanId) {
+          try {
+            const scan = await storage.getScan(scanId);
+            if (scan && scan.userId === userId) targetUrl = scan.targetUrl;
+          } catch (e) {
+            // ignore lookup errors and leave targetUrl null
+          }
+        }
+
+        return {
+          id: r.id,
+          userId: r.userId,
+          scanId: scanId,
+          reportName: r.reportName,
+          reportPath: r.reportPath,
+          createdAt: r.createdAt,
+          total: (r as any).total ?? 0,
+          critical: (r as any).critical ?? 0,
+          high: (r as any).high ?? 0,
+          medium: (r as any).medium ?? 0,
+          low: (r as any).low ?? 0,
+          scanType: (r as any).scanType || null,
+          targetUrl,
+        };
+      }));
+
+      res.json(detailed);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch reports" });
     }
@@ -568,57 +585,133 @@ function escapeHtml(unsafe: any): string {
     .replace(/'/g, "&#039;");
 }
 
+// Helper function at the end of routes.ts to replace generateHTMLReport
+
 function generateHTMLReport(scan: any, vulnerabilities: any[]): string {
+  // Format dates in DD/MM/YYYY format
+  const formatDate = (date: Date | string | null) => {
+    if (!date) return 'N/A';
+    const d = new Date(date);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const seconds = String(d.getSeconds()).padStart(2, '0');
+    return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
+  };
+
   return `
 <!DOCTYPE html>
 <html>
 <head>
-  <title>ZAP Scan Report - ${escapeHtml(scan.targetUrl)}</title>
+  <title>Security Scan Report - ${escapeHtml(scan.targetUrl)}</title>
+  <meta charset="UTF-8">
   <style>
-    body { font-family: Arial, sans-serif; margin: 40px; background: #1a1a1a; color: #fff; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; background: #1a1a1a; color: #fff; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
     .header { border-bottom: 2px solid #14b8a6; padding-bottom: 20px; margin-bottom: 30px; }
+    .header h1 { color: #14b8a6; margin-bottom: 15px; font-size: 2em; }
+    .header p { margin: 5px 0; color: #aaa; }
+    .header .meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 15px; }
+    .header .meta p { background: #2a2a2a; padding: 10px; border-radius: 5px; }
     .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px; }
     .stat { background: #2a2a2a; padding: 20px; border-radius: 8px; text-align: center; }
-    .stat-value { font-size: 2em; font-weight: bold; color: #14b8a6; }
-    .vuln { background: #2a2a2a; margin-bottom: 15px; padding: 20px; border-radius: 8px; border-left: 4px solid; }
+    .stat-value { font-size: 2.5em; font-weight: bold; color: #14b8a6; display: block; margin-bottom: 5px; }
+    .stat-label { color: #aaa; font-size: 0.9em; }
+    .vulnerabilities-section { margin-top: 30px; }
+    .vulnerabilities-section h2 { color: #14b8a6; margin-bottom: 20px; font-size: 1.8em; }
+    .vuln { background: #2a2a2a; margin-bottom: 15px; padding: 20px; border-radius: 8px; border-left: 4px solid; page-break-inside: avoid; }
     .critical { border-color: #dc2626; }
     .high { border-color: #ea580c; }
     .medium { border-color: #eab308; }
     .low { border-color: #14b8a6; }
-    .severity { display: inline-block; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+    .info { border-color: #3b82f6; }
+    .severity { display: inline-block; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
     .severity.critical { background: #dc2626; }
     .severity.high { background: #ea580c; }
     .severity.medium { background: #eab308; color: #000; }
     .severity.low { background: #14b8a6; }
-    h1, h2, h3 { color: #14b8a6; }
+    .severity.info { background: #3b82f6; }
+    .vuln h3 { color: #fff; margin: 10px 0; font-size: 1.2em; }
+    .vuln p { margin: 8px 0; line-height: 1.6; color: #ccc; }
+    .vuln p strong { color: #14b8a6; }
+    .vuln-detail { background: #1a1a1a; padding: 10px; border-radius: 4px; margin-top: 10px; word-break: break-word; }
+    @media print {
+      body { background: white; color: black; }
+      .header, .stat, .vuln { background: white; border: 1px solid #ddd; }
+      .header h1 { color: #14b8a6; }
+      .stat-value { color: #14b8a6; }
+      .vuln h3, .vuln p strong { color: #000; }
+      .vuln p { color: #333; }
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>ZAP Vulnerability Scan Report</h1>
-    <p>Target: ${escapeHtml(scan.targetUrl)}</p>
-    <p>Scan Type: ${escapeHtml(scan.scanType)}</p>
-    <p>Completed: ${scan.completedAt ? new Date(scan.completedAt).toLocaleString() : 'N/A'}</p>
-  </div>
-
-  <div class="summary">
-    <div class="stat"><div class="stat-value">${vulnerabilities.length}</div>Total</div>
-    <div class="stat"><div class="stat-value" style="color:#dc2626">${scan.criticalCount || 0}</div>Critical</div>
-    <div class="stat"><div class="stat-value" style="color:#ea580c">${scan.highCount || 0}</div>High</div>
-    <div class="stat"><div class="stat-value" style="color:#eab308">${scan.mediumCount || 0}</div>Medium</div>
-  </div>
-
-  <h2>Vulnerabilities</h2>
-  ${vulnerabilities.map(v => `
-    <div class="vuln ${v.severity.toLowerCase()}">
-      <span class="severity ${v.severity.toLowerCase()}">${v.severity}</span>
-      <h3>${escapeHtml(v.title)}</h3>
-      <p><strong>Type:</strong> ${escapeHtml(v.type)}</p>
-      <p>${escapeHtml(v.description)}</p>
-      <p><strong>Affected URL:</strong> ${escapeHtml(v.affectedUrl)}</p>
-      <p><strong>Remediation:</strong> ${escapeHtml(v.remediation || 'N/A')}</p>
+  <div class="container">
+    <div class="header">
+            <h1>Web Vulnerability Scan Report</h1>
+      <div style="background: #2a2a2a; padding: 12px; border-radius: 5px; margin-bottom: 15px; border-left: 3px solid #14b8a6;">
+        <p style="margin: 0; color: #14b8a6; font-size: 0.9em;">
+          ?? <strong>Tip:</strong> To save as PDF, press <kbd style="background: #1a1a1a; padding: 2px 6px; border-radius: 3px; font-family: monospace;">Ctrl+P</kbd> and select "Save as PDF"
+        </p>
+      </div>
+      <div class="meta">
+        <p><strong>Target:</strong> ${escapeHtml(scan.targetUrl)}</p>
+        <p><strong>Scan Type:</strong> ${escapeHtml(scan.scanType)}</p>
+        <p><strong>Started:</strong> ${formatDate(scan.startedAt)}</p>
+        <p><strong>Completed:</strong> ${formatDate(scan.completedAt)}</p>
+      </div>
     </div>
-  `).join('')}
+
+    <div class="summary">
+      <div class="stat">
+        <span class="stat-value">${vulnerabilities.length}</span>
+        <span class="stat-label">Total</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" style="color:#dc2626">${scan.criticalCount || 0}</span>
+        <span class="stat-label">Critical</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" style="color:#ea580c">${scan.highCount || 0}</span>
+        <span class="stat-label">High</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" style="color:#eab308">${scan.mediumCount || 0}</span>
+        <span class="stat-label">Medium</span>
+      </div>
+    </div>
+
+    <div class="vulnerabilities-section">
+      <h2>Vulnerabilities</h2>
+      ${vulnerabilities.map((v, index) => `
+        <div class="vuln ${(v.severity || 'low').toLowerCase()}">
+          <span class="severity ${(v.severity || 'low').toLowerCase()}">${v.severity || 'low'}</span>
+          <h3>${index + 1}. ${escapeHtml(v.title)}</h3>
+          <p><strong>Type:</strong> ${escapeHtml(v.type)}</p>
+          <p><strong>Description:</strong> ${escapeHtml(v.description)}</p>
+          <p><strong>Affected URL:</strong> ${escapeHtml(v.affectedUrl)}</p>
+          ${v.remediation ? `<p><strong>Remediation:</strong> ${escapeHtml(v.remediation)}</p>` : ''}
+          ${v.details && typeof v.details === 'object' ? `
+            <div class="vuln-detail">
+              <strong>Technical Details:</strong><br>
+              ${Object.entries(v.details).filter(([_, value]) => value !== null && value !== undefined).map(([key, value]) => 
+                `<div style="margin: 5px 0;"><strong>${escapeHtml(key)}:</strong> ${escapeHtml(String(value))}</div>`
+              ).join('')}
+            </div>
+          ` : ''}
+        </div>
+      `).join('')}
+    </div>
+
+    <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #333; text-align: center; color: #666; font-size: 0.9em;">
+      <p>Generated by Web Vulnerability Scanner v1.2025</p>
+      <p>Report generated at: ${formatDate(new Date())}</p>
+    </div>
+  </div>
 </body>
 </html>`;
 }
+

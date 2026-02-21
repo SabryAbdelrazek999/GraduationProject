@@ -47,7 +47,8 @@ export default function Dashboard() {
     return (
       <div className="p-6 space-y-6" data-testid="page-dashboard">
         <h1 className="text-2xl font-semibold text-foreground">Dashboard</h1>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <Skeleton className="h-24" />
           <Skeleton className="h-24" />
           <Skeleton className="h-24" />
           <Skeleton className="h-24" />
@@ -63,6 +64,8 @@ export default function Dashboard() {
 
   const stats = dashboard?.stats || { totalScans: 0, totalVulnerabilities: 0, criticalCount: 0, lastScanTime: "Never" };
   const weeklyData = dashboard?.weeklyData || [];
+
+  const mediumCount = allVulnerabilities ? allVulnerabilities.filter(v => v.severity === "medium").length : 0;
 
   const severityData = allVulnerabilities
     ? [
@@ -100,7 +103,7 @@ export default function Dashboard() {
     <div className="p-6 space-y-6" data-testid="page-dashboard">
       <h1 className="text-2xl font-semibold text-foreground">Dashboard</h1>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         <Card className="bg-card border-card-border">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
@@ -138,6 +141,17 @@ export default function Dashboard() {
                 <p className="text-2xl font-bold text-foreground">{stats.criticalCount}</p>
               </div>
               <AlertTriangle className={`w-5 h-5 ${stats.criticalCount > 0 ? 'text-destructive' : 'text-muted-foreground'}`} />
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="bg-card border-card-border">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Medium Issues</p>
+                <p className="text-2xl font-bold text-foreground">{mediumCount}</p>
+              </div>
+              <AlertTriangle className={`w-5 h-5 ${mediumCount > 0 ? 'text-yellow-500' : 'text-muted-foreground'}`} />
             </div>
           </CardContent>
         </Card>

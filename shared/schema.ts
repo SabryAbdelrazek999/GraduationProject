@@ -36,6 +36,7 @@ export const scans = pgTable("scans", {
   highCount: integer("high_count").default(0),
   mediumCount: integer("medium_count").default(0),
   lowCount: integer("low_count").default(0),
+  infoCount: integer("info_count").default(0),
 });
 
 export const insertScanSchema = createInsertSchema(scans).pick({
@@ -150,6 +151,7 @@ export const reports = pgTable("reports", {
   high: integer("high").default(0),
   medium: integer("medium").default(0),
   low: integer("low").default(0),
+  scanType: text("scan_type"),
 });
 
 export const insertReportSchema = createInsertSchema(reports).pick({
@@ -163,6 +165,7 @@ export const insertReportSchema = createInsertSchema(reports).pick({
   high: true,
   medium: true,
   low: true,
+  scanType: true,
 });
 
 export type InsertReport = z.infer<typeof insertReportSchema>;

@@ -9,6 +9,7 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./swagger";
+import { storage } from "./storage";
 
 const app = express();
 const httpServer = createServer(app);
@@ -39,7 +40,7 @@ app.use(cors({ origin: true, credentials: true }));
 // Skip rate limiting for ZAP scanner requests
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 10000, // Increased to 10,000 requests per 15 min
   message: "Too many requests from this IP, please try again later.",
   skip: (req) => {
     // Skip rate limiting for ZAP scanner User-Agent
@@ -91,6 +92,10 @@ app.use((req, res, next) => {
 
 (async () => {
   await registerRoutes(httpServer, app);
+
+  // Cleanup: Mark any scans that were "running" during a previous crash as "failed"
+  log("Cleaning up stale scans...", "startup");
+  await storage.resetActiveScans();
 
   // Initialize scheduler for scheduled scans
   initScheduler();

@@ -15,6 +15,15 @@ export function initScheduler() {
       const schedules = await storage.getAllScheduledScans();
       const now = new Date();
 
+      // Concurrency Check: Don't start new scheduled scans if system is busy
+      // Get all currently running scans
+      const allScans = await storage.getAllScans();
+      const runningScans = allScans.filter(s => s.status === "running" || s.status === "pending");
+      if (runningScans.length >= 2) {
+        log(`Skipping scheduled scans: System busy (${runningScans.length} active scans)`, "scheduler");
+        return;
+      }
+
       for (const schedule of schedules) {
         if (!schedule.enabled) continue;
 

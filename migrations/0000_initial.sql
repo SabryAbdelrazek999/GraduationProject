@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS "scheduled_scans" (
   "target_url" TEXT NOT NULL,
   "frequency" TEXT NOT NULL,
   "time" TEXT NOT NULL,
+  "day_of_week" INTEGER,
+  "day_of_month" INTEGER,
+  "month" INTEGER,
   "enabled" BOOLEAN DEFAULT true,
   "last_run" TIMESTAMP,
   "next_run" TIMESTAMP

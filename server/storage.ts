@@ -9,9 +9,9 @@ import {
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
-import pg from "pg";
-const { Pool } = pg;
-import { eq, sql } from "drizzle-orm";
+import pkg from "pg";
+const { Pool } = pkg;
+import { eq, sql, inArray } from "drizzle-orm";
 
 export interface IStorage {
   // Users
@@ -32,6 +32,7 @@ export interface IStorage {
   deleteScan(id: string): Promise<boolean>;
   getRecentScans(limit: number): Promise<Scan[]>;
   getUserScans(userId: string): Promise<Scan[]>;
+  resetActiveScans(): Promise<void>;
 
   // Vulnerabilities
   getVulnerability(id: string): Promise<Vulnerability | undefined>;
@@ -237,6 +238,15 @@ export class MemStorage implements IStorage {
       });
   }
 
+  async resetActiveScans(): Promise<void> {
+    for (const scan of this.scans.values()) {
+      if (scan.status === "running" || scan.status === "pending") {
+        const updatedScan: Scan = { ...scan, status: "failed", completedAt: new Date() };
+        this.scans.set(scan.id, updatedScan);
+      }
+    }
+  }
+
   // Vulnerabilities
   async getVulnerability(id: string): Promise<Vulnerability | undefined> {
     return this.vulnerabilities.get(id);
@@ -376,6 +386,7 @@ export class MemStorage implements IStorage {
       high: (insertReport as any).high ?? 0,
       medium: (insertReport as any).medium ?? 0,
       low: (insertReport as any).low ?? 0,
+      scanType: (insertReport as any).scanType ?? null,
     } as any;
     this.reports.set(id, report);
     return report;
@@ -483,7 +494,7 @@ export class DbStorage implements IStorage {
 
       if (scanIds.length > 0) {
         // 2. Delete vulnerabilities
-        await tx.delete(vulnerabilities).where(sql`${vulnerabilities.scanId} IN ${scanIds}`);
+        await tx.delete(vulnerabilities).where(inArray(vulnerabilities.scanId, scanIds));
         // 3. Delete scans
         await tx.delete(scans).where(eq(scans.userId, id));
       }
@@ -546,6 +557,15 @@ export class DbStorage implements IStorage {
     return await this.db.select().from(scans).where(eq(scans.userId, userId)).orderBy(sql`${scans.startedAt} DESC NULLS LAST`);
   }
 
+  async resetActiveScans(): Promise<void> {
+    await this.db.update(scans)
+      .set({ 
+        status: "failed",
+        completedAt: new Date()
+      })
+      .where(inArray(scans.status, ["running", "pending"] as any));
+  }
+
   // Vulnerabilities
   async getVulnerability(id: string): Promise<Vulnerability | undefined> {
     const result = await this.db.select().from(vulnerabilities).where(eq(vulnerabilities.id, id)).limit(1);
@@ -588,9 +608,9 @@ export class DbStorage implements IStorage {
       targetUrl: insertSchedule.targetUrl,
       frequency: insertSchedule.frequency,
       time: insertSchedule.time,
-      dayOfWeek: insertSchedule.dayOfWeek,
-      dayOfMonth: insertSchedule.dayOfMonth,
-      month: insertSchedule.month,
+      dayOfWeek: insertSchedule.dayOfWeek ?? null,
+      dayOfMonth: insertSchedule.dayOfMonth ?? null,
+      month: insertSchedule.month ?? null,
       enabled: insertSchedule.enabled ?? true,
       lastRun: null,
       nextRun: null,
@@ -666,6 +686,7 @@ export class DbStorage implements IStorage {
       high: (insertReport as any).high ?? 0,
       medium: (insertReport as any).medium ?? 0,
       low: (insertReport as any).low ?? 0,
+      scanType: (insertReport as any).scanType ?? null,
     }).returning();
     return result[0];
   }

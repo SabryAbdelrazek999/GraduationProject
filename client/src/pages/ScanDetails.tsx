@@ -1,4 +1,3 @@
-import { useState, useEffect } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -6,18 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Download, Loader2, CheckCircle, AlertTriangle, ArrowLeft, Printer, Globe } from "lucide-react";
+import { Download, Loader2, CheckCircle, AlertTriangle, ArrowLeft, Globe } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiRequest } from "@/lib/queryClient";
-import { useToast } from "@/hooks/use-toast";
-import type { Scan, Vulnerability, Report } from "@shared/schema";
+import type { Scan, Vulnerability } from "@shared/schema";
 
 export default function ScanDetails() {
   const [, params] = useRoute("/scans/:id");
   const id = params?.id;
-  const { toast } = useToast();
-  const [report, setReport] = useState<Report | null>(null);
-  const [scan, setScan] = useState<(Scan & { vulnerabilities: Vulnerability[] }) | null>(null);
 
   // We might fetch report first to get the scan ID, or directly scan if we have ID.
   // The route is /reports/:id, which likely refers to a REPORT ID based on the Reports page.
@@ -42,8 +37,8 @@ export default function ScanDetails() {
   const { data: scanData, isLoading, error } = useQuery<Scan & { vulnerabilities: Vulnerability[] }>({
     queryKey: ["/api/scans", id],
     enabled: !!id,
-    refetchInterval: (query) => {
-      const data = query.state.data;
+    refetchInterval: (query: any) => {
+      const data = query?.state?.data ?? query;
       if (data?.status === "running" || data?.status === "pending") {
         return 2000;
       }
@@ -112,10 +107,6 @@ export default function ScanDetails() {
           <Button variant="outline" onClick={() => handleDownloadReport("html")}>
             <Download className="w-4 h-4 mr-2" />
             HTML
-          </Button>
-          <Button variant="outline" onClick={() => window.print()}>
-            <Printer className="w-4 h-4 mr-2" />
-            Print
           </Button>
         </div>
       </div>
@@ -194,7 +185,7 @@ export default function ScanDetails() {
               })()}
 
               {scanData.status === "completed" && (
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
                   <div className="text-center p-3 bg-muted/50 rounded-md">
                     <p className="text-2xl font-bold text-foreground">{scanData.totalVulnerabilities}</p>
                     <p className="text-xs text-muted-foreground">Total</p>
@@ -214,6 +205,10 @@ export default function ScanDetails() {
                   <div className="text-center p-3 bg-primary/10 rounded-md">
                     <p className="text-2xl font-bold text-primary">{scanData.lowCount}</p>
                     <p className="text-xs text-muted-foreground">Low</p>
+                  </div>
+                  <div className="text-center p-3 bg-slate-500/10 rounded-md">
+                    <p className="text-2xl font-bold text-slate-500">{(scanData as any).infoCount || 0}</p>
+                    <p className="text-xs text-muted-foreground">Info</p>
                   </div>
                 </div>
               )}
@@ -272,3 +267,4 @@ export default function ScanDetails() {
     </div>
   );
 }
+

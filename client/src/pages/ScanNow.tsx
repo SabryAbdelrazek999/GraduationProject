@@ -5,13 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Search, Play, Loader2, CheckCircle, AlertTriangle, X } from "lucide-react";
+import { Search, Play, Loader2, CheckCircle, AlertTriangle, X, HelpCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useScan } from "@/lib/scan-context";
 import type { Scan } from "@shared/schema";
 
 import { Progress } from "@/components/ui/progress";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useLocation } from "wouter";
 import {
   Select,
   SelectContent,
@@ -22,8 +24,20 @@ import {
 
 export default function ScanNow() {
   const [url, setUrl] = useState("");
-  const { activeScanId, setActiveScanId, activeScan, isCanceling, setIsCanceling, formattedETA, displayedProgress } = useScan();
+  const { activeScanId, setActiveScanId, activeScan, isCanceling, setIsCanceling, formattedETA, displayedProgress, isStalled } = useScan();
   const { toast } = useToast();
+  const [blockedTarget, setBlockedTarget] = useState<string | null>(null);
+  const blockedDomains = ["youtube.com", "google.com", "facebook.com", "twitter.com", "instagram.com", "linkedin.com", "tiktok.com"];
+
+  // Watch url field and show the blocked panel immediately if the typed/selected URL is blocked
+  useEffect(() => {
+    if (!url) {
+      setBlockedTarget(null);
+      return;
+    }
+    const matches = blockedDomains.some(domain => url.includes(domain));
+    setBlockedTarget(matches ? url : null);
+  }, [url]);
 
   const { data: recentScans } = useQuery<Scan[]>({
     queryKey: ["/api/scans/recent"],
@@ -57,13 +71,13 @@ export default function ScanNow() {
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       toast({
         title: "Scan Started",
-        description: `Scanning ${url}...`,
+        description: `Scanning ${url} with ${scanDepth.charAt(0).toUpperCase() + scanDepth.slice(1)} scan...`,
       });
     },
-    onError: () => {
+    onError: (error: any) => {
       toast({
         title: "Scan Failed",
-        description: "Failed to start the scan. Please try again.",
+        description: error.message || "Failed to start the scan. Please try again.",
         variant: "destructive",
       });
     },
@@ -120,6 +134,13 @@ export default function ScanNow() {
       targetUrl = "https://" + url;
     }
 
+    // Block major platforms that cause timeouts/bans
+    if (blockedDomains.some(domain => targetUrl.includes(domain))) {
+      // show persistent in-page warning with a dismiss button and FAQ link
+      setBlockedTarget(targetUrl);
+      return;
+    }
+
     // Use the selected scan depth as scanType (shallow|medium|deep)
     scanMutation.mutate({ targetUrl, scanType: scanDepth });
   };
@@ -134,8 +155,23 @@ export default function ScanNow() {
   const recentUrls = Array.from(new Set((recentScans || []).map(s => s.targetUrl))).slice(0, 5);
   const isScanning = activeScan && (activeScan.status === "running" || activeScan.status === "pending");
 
+  const [, setLocation] = useLocation();
+
+  const [showHintPanel, setShowHintPanel] = useState(false);
+
+  const openFaqForScanTypes = () => {
+    setShowHintPanel(false);
+    setLocation("/faq#scan-types");
+  };
+
+  const openAboutForTool = (toolHash: string) => {
+    setShowHintPanel(false);
+    setLocation(`/about#${toolHash}`);
+  };
+
   return (
-    <div className="p-6 space-y-6" data-testid="page-scan-now">
+    <TooltipProvider>
+      <div className="p-6 space-y-6" data-testid="page-scan-now">
       <h1 className="text-2xl font-semibold text-foreground">Scan Now</h1>
       
       <Card className="bg-card border-card-border">
@@ -168,11 +204,11 @@ export default function ScanNow() {
                 data-testid="button-start-scan"
               >
                 {isScanning || scanMutation.isPending ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Scanning...
-                  </>
-                ) : (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Scanning with {(activeScan?.scanType || scanDepth).charAt(0).toUpperCase() + (activeScan?.scanType || scanDepth).slice(1)}...
+                    </>
+                  ) : (
                   <>
                     <Play className="w-4 h-4 mr-2" />
                     Start Scan
@@ -183,17 +219,105 @@ export default function ScanNow() {
           </div>
 
           {/* Scan type selection - uses user settings and persists on change */}
-          <div className="space-y-2">
-            <Label>Scan Type</Label>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 relative">
+              <Label>Scan Type</Label>
+              <button
+                aria-label="Open scan type details"
+                onClick={() => setShowHintPanel((s) => !s)}
+                className="rounded-full p-1 hover:bg-muted/50"
+                title="Show scan type details"
+              >
+                <HelpCircle className="w-4 h-4 text-muted-foreground hover:text-foreground cursor-pointer transition-colors" />
+              </button>
+
+              {showHintPanel && (
+                <div className="absolute z-50 left-28 top-0 w-96 p-4 bg-popover border rounded shadow-lg">
+                  <div className="flex items-start justify-between">
+                    <div className="text-sm font-semibold">Scan details</div>
+                    <button onClick={() => setShowHintPanel(false)} className="text-muted-foreground hover:text-foreground">X</button>
+                  </div>
+                  <div className="mt-3 text-sm space-y-3">
+                    {scanDepth === "shallow" && (
+                      <div>
+                        <p className="font-medium mb-1">🟦 Shallow - Quick Scan</p>
+                        <div className="text-xs space-y-1">
+                          <p>⏱️ <strong>Duration:</strong> 1-6:8 mins <span className="text-muted-foreground">(+ may increase depending on target)</span></p>
+                          <p><strong>Tools:</strong></p>
+                          <p>
+                            ✓ <button onClick={() => openAboutForTool("httpx")} className="underline">Httpx</button>: basic reachability & header validation
+                          </p>
+                          <p>✗ Nmap: Disabled</p>
+                          <p>✗ Nikto: Disabled</p>
+                          <p>
+                            ⚡ <button onClick={() => openAboutForTool("zap")} className="underline">ZAP</button>: shallow spider/quick checks
+                          </p>
+                          <p className="pt-2 italic">Best for: very quick smoke tests and CI-friendly checks</p>
+                        </div>
+                      </div>
+                    )}
+                    {scanDepth === "medium" && (
+                      <div>
+                        <p className="font-medium mb-1">⚖️ Medium - Standard Scan</p>
+                        <div className="text-xs space-y-1">
+                          <p>⏱️ <strong>Duration:</strong> 10-30:40 mins <span className="text-muted-foreground">(+ may increase depending on target)</span></p>
+                          <p><strong>Tools:</strong></p>
+                          <p>
+                            ✓ <button onClick={() => openAboutForTool("httpx")} className="underline">Httpx</button>: validation + HTTP checks
+                          </p>
+                          <p>
+                            📡 <button onClick={() => openAboutForTool("nmap")} className="underline">Nmap</button>: top ports (fast service detection)
+                          </p>
+                          <p>
+                            📊 <button onClick={() => openAboutForTool("nikto")} className="underline">Nikto</button>: limited tuning/timeout for common checks
+                          </p>
+                          <p>
+                            🔍 <button onClick={() => openAboutForTool("zap")} className="underline">ZAP</button>: standard spider + active tests
+                          </p>
+                          <p className="pt-2 italic">Best for: balanced scans suitable for staging environments</p>
+                        </div>
+                      </div>
+                    )}
+                    {scanDepth === "deep" && (
+                      <div>
+                        <p className="font-medium mb-1">🔐 Deep - Comprehensive Scan</p>
+                        <div className="text-xs space-y-1">
+                          <p>⏱️ <strong>Duration:</strong> 20-50+ mins <span className="text-muted-foreground">(+ may increase depending on target)</span></p>
+            
+                          <p><strong>Tools:</strong></p>
+                          <p>
+                            ✓ <button onClick={() => openAboutForTool("httpx")} className="underline">Httpx</button>: thorough validation
+                          </p>
+                          <p>
+                            🔍 <button onClick={() => openAboutForTool("nmap")} className="underline">Nmap</button>: extensive port/service discovery
+                          </p>
+                          <p>
+                            📋 <button onClick={() => openAboutForTool("nikto")} className="underline">Nikto</button>: full webserver checks
+                          </p>
+                          <p>
+                            🔒 <button onClick={() => openAboutForTool("zap")} className="underline">ZAP</button>: deep spider + active scanning
+                          </p>
+                          <p className="pt-2 italic">Best for: full security audits and pre-release checks</p>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="pt-2">
+                      <button onClick={openFaqForScanTypes} className="text-sm underline">Learn more about scan types (FAQ)</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="flex items-center gap-3">
               <Select value={scanDepth} onValueChange={(v) => { setScanDepth(v); persistSettingsMutation.mutate({ scanDepth: v }); }}>
                 <SelectTrigger className="w-64">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="shallow">Shallow - Quick scan</SelectItem>
-                  <SelectItem value="medium">Medium - Standard scan</SelectItem>
-                  <SelectItem value="deep">Deep - Comprehensive scan</SelectItem>
+                  <SelectItem value="shallow">Shallow - Quick scan (1-6:8 mins)</SelectItem>
+                  <SelectItem value="medium">Medium - Standard scan (10-30:40 mins)</SelectItem>
+                  <SelectItem value="deep">Deep - Comprehensive scan (20-50+ mins)</SelectItem>
                 </SelectContent>
               </Select>
               <div className="text-sm text-muted-foreground">Current: <span className="font-medium ml-1">{scanDepth}</span></div>
@@ -221,6 +345,25 @@ export default function ScanNow() {
         </CardContent>
       </Card>
 
+      {blockedTarget && (
+        <div className="fixed right-6 bottom-6 z-50">
+          <div className="w-96 bg-destructive/10 border border-destructive/30 rounded-md p-4 shadow-lg">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-semibold text-destructive">Target Not Supported</div>
+                <div className="text-sm text-muted-foreground mt-1">Scanning major platforms (YouTube, Google, etc.) is not allowed as it causes timeouts and IP bans. Please scan your own applications.</div>
+                <div className="mt-3">
+                  <button onClick={() => setLocation("/faq#scan-blocked")} className="text-sm underline">Why is this blocked? Learn more</button>
+                </div>
+              </div>
+              <div className="flex-shrink-0">
+                <button onClick={() => setBlockedTarget(null)} className="ml-2 text-muted-foreground hover:text-foreground">X</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeScan && (
         <Card className={`bg-card border-card-border ${activeScan.status === "running" || activeScan.status === "pending" || isCanceling ? "border-primary/50" : activeScan.status === "completed" ? "border-primary" : activeScan.status === "cancelled" ? "border-yellow-500/50" : "border-destructive"}`}>
           <CardHeader>
@@ -237,7 +380,7 @@ export default function ScanNow() {
               {isCanceling
                 ? "Stopping Scan..."
                 : activeScan.status === "running" || activeScan.status === "pending" 
-                  ? "Scan in Progress" 
+                  ? `${activeScan.scanType ? activeScan.scanType.charAt(0).toUpperCase() + activeScan.scanType.slice(1) : "Unknown"} Scan in Progress` 
                   : activeScan.status === "completed" 
                     ? "Scan Completed"
                     : activeScan.status === "cancelled"
@@ -261,6 +404,14 @@ export default function ScanNow() {
                       <span>{displayedProgress}%</span>
                     </div>
                     <Progress value={displayedProgress} className="h-2" />
+                    
+                    {isStalled && (
+                      <div className="mt-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded text-xs text-yellow-600 flex items-center gap-2 animate-pulse">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span>This stage is complex and taking longer than usual. Please wait...</span>
+                      </div>
+                    )}
+
                     <div className="mt-3 text-xs text-muted-foreground">
                       {displayedProgress === 0 && "Initializing..."}
                       {displayedProgress > 0 && displayedProgress <= 10 && "Validating Target (Httpx)"}
@@ -357,5 +508,6 @@ export default function ScanNow() {
         </Card>
       )}
     </div>
+    </TooltipProvider>
   );
 }

@@ -10,6 +10,7 @@ interface ScanContextType {
   isCanceling: boolean;
   setIsCanceling: (value: boolean) => void;
   estimatedRemainingSeconds?: number | null;
+  isStalled: boolean;
   formattedETA?: string | null;
   displayedProgress: number;
 }
@@ -19,43 +20,39 @@ const ScanContext = createContext<ScanContextType | undefined>(undefined);
 export function ScanProvider({ children }: { children: React.ReactNode }) {
   const [activeScanId, setActiveScanId] = useState<string | null>(null);
   const [isCanceling, setIsCanceling] = useState(false);
-  const [progressSamples, setProgressSamples] = useState<Array<{ t: number; p: number }>>([]);
   const [displayedProgress, setDisplayedProgress] = useState<number>(0);
+  const [lastProgressUpdate, setLastProgressUpdate] = useState<number>(Date.now());
+  const [isStalled, setIsStalled] = useState(false);
 
   const { data: activeScan } = useQuery<Scan & { vulnerabilities: any[] }>({
     queryKey: ["/api/scans", activeScanId],
     enabled: !!activeScanId,
     // keep polling while there's an active scan so progress updates even when user navigates away
-    refetchInterval: (data) => {
+    refetchInterval: () => {
       if (!activeScanId) return false;
       // poll every second while there is an active scan id
       return 1000;
     },
   });
 
-  // Maintain recent progress samples to compute ETA
-  useEffect(() => {
-    if (!activeScan) return;
-    const p = typeof (activeScan as any).progress === "number" ? (activeScan as any).progress : null;
-    if (p === null || p === undefined) return;
-    const t = Date.now();
-    setProgressSamples((s) => {
-      const next = [...s, { t, p }];
-      // keep last 6 samples (~6 seconds)
-      return next.slice(-6);
-    });
-  }, [activeScan?.progress]);
+  const isScanning = !!(activeScan && (activeScan.status === "running" || activeScan.status === "pending"));
 
   // Smoothly animate displayedProgress toward activeScan.progress
   useEffect(() => {
     const target = typeof (activeScan as any)?.progress === "number" ? (activeScan as any).progress : 0;
-    // Never decrease displayedProgress, only increase it
+    
+    // If target is less than displayed (e.g. new scan started or reset), snap immediately
+    if (target < displayedProgress && target === 0) {
+      setDisplayedProgress(target);
+      return;
+    }
+
     if (displayedProgress >= target) {
       return; // Don't animate backwards
     }
 
     let cancelled = false;
-    const stepMs = 150; // time between visual increments
+    const stepMs = 100; // Faster updates
     const handle = setInterval(() => {
       setDisplayedProgress((cur) => {
         if (cancelled) return cur;
@@ -63,7 +60,10 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
           clearInterval(handle);
           return target;
         }
-        return cur + 1; // increment visually by 1%
+        // Proportional step for faster catch-up
+        const diff = target - cur;
+        const step = Math.max(1, Math.ceil(diff / 10));
+        return Math.min(target, cur + step);
       });
     }, stepMs);
 
@@ -73,25 +73,50 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
     };
   }, [activeScan?.progress]);
 
+  // Update lastProgressUpdate for stall detection
+  useEffect(() => {
+    if (typeof activeScan?.progress === "number") {
+      setLastProgressUpdate(Date.now());
+      setIsStalled(false);
+    }
+  }, [activeScan?.progress]);
+
   const estimatedRemainingSeconds = (() => {
-    const samples = progressSamples;
-    if (samples.length < 2) return null;
-    // compute rate using oldest -> newest
-    const first = samples[0];
-    const last = samples[samples.length - 1];
-    const deltaP = last.p - first.p;
-    const deltaT = (last.t - first.t) / 1000; // seconds
-    if (deltaT <= 0 || deltaP <= 0) return null;
-    const rate = deltaP / deltaT; // percent per second
-    const remainingPct = Math.max(0, 100 - (last.p || 0));
-    const seconds = remainingPct / rate;
-    if (!isFinite(seconds) || seconds < 0) return null;
+    if (!activeScan || activeScan.status !== "running" || !activeScan.startedAt) return null;
+    
+    const progress = (activeScan as any).progress;
+    if (typeof progress !== "number" || progress <= 0 || progress >= 100) return null;
+
+    const startTime = new Date(activeScan.startedAt).getTime();
+    const elapsedSeconds = (Date.now() - startTime) / 1000;
+    if (elapsedSeconds < 5) return null;
+
+    const rate = progress / elapsedSeconds; // avg percent per second
+    if (rate <= 0) return null;
+
+    const remainingPercent = 100 - progress;
+    const seconds = remainingPercent / rate;
+    
     return Math.round(seconds);
   })();
 
-  const isScanning = activeScan && (activeScan.status === "running" || activeScan.status === "pending");
+  // Check if progress hasn't moved for more than 15 seconds
+  useEffect(() => {
+    const checkStall = () => {
+      const stalled = isScanning && (Date.now() - lastProgressUpdate > 30000); // Increased to 30s
+      setIsStalled(stalled);
+    };
+
+    checkStall();
+    const interval = setInterval(checkStall, 2000);
+    return () => clearInterval(interval);
+  }, [isScanning, lastProgressUpdate]);
+
   const formattedETA = (() => {
-    if (!estimatedRemainingSeconds) return null;
+    if (estimatedRemainingSeconds === null || estimatedRemainingSeconds === undefined) {
+      if (isScanning && (activeScan as any)?.progress > 0) return "Calculating...";
+      return null;
+    }
     const sec = estimatedRemainingSeconds;
     if (sec < 60) return `${sec}s`;
     const m = Math.floor(sec / 60);
@@ -105,10 +130,11 @@ export function ScanProvider({ children }: { children: React.ReactNode }) {
         activeScanId,
         setActiveScanId,
         activeScan,
-        isScanning: !!isScanning,
+        isScanning,
         isCanceling,
         setIsCanceling,
         estimatedRemainingSeconds,
+        isStalled,
         formattedETA,
         displayedProgress,
       }}

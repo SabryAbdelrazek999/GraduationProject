@@ -15,7 +15,7 @@ export default function CompareScans() {
     const [scanBId, setScanBId] = useState<string>("");
 
     const { data: scans } = useQuery<Scan[]>({
-        queryKey: ["/api/scans/recent"],
+        queryKey: ["/api/scans"],
     });
 
     const { data: scanA } = useQuery<ScanWithVulns>({
@@ -62,12 +62,23 @@ export default function CompareScans() {
                             <SelectTrigger>
                                 <SelectValue placeholder="Select Old Scan" />
                             </SelectTrigger>
-                            <SelectContent>
-                                {scans?.map(scan => (
-                                    <SelectItem key={scan.id} value={scan.id}>
-                                        {new Date(scan.startedAt!).toLocaleString()} - {scan.targetUrl}
-                                    </SelectItem>
-                                ))}
+                            <SelectContent className="max-h-[400px] overflow-y-auto">
+                                {scans?.slice(0, 10).map(scan => {
+                                    const dateStr = new Date(scan.startedAt!).toLocaleString('en-US', {
+                                        year: 'numeric',
+                                        month: '2-digit',
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                        hour12: false
+                                    });
+                                    return (
+                                        <SelectItem key={scan.id} value={scan.id}>
+                                            <span>[{dateStr}] · {scan.targetUrl}</span>
+                                        </SelectItem>
+                                    );
+                                })}
                             </SelectContent>
                         </Select>
                         {scanA && (
@@ -94,12 +105,23 @@ export default function CompareScans() {
                             <SelectTrigger>
                                 <SelectValue placeholder="Select New Scan" />
                             </SelectTrigger>
-                            <SelectContent>
-                                {scans?.map(scan => (
-                                    <SelectItem key={scan.id} value={scan.id}>
-                                        {new Date(scan.startedAt!).toLocaleString()} - {scan.targetUrl}
-                                    </SelectItem>
-                                ))}
+                            <SelectContent className="max-h-[400px] overflow-y-auto">
+                                {scans?.slice(0, 10).map(scan => {
+                                    const dateStr = new Date(scan.startedAt!).toLocaleString('en-US', {
+                                        year: 'numeric',
+                                        month: '2-digit',
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        second: '2-digit',
+                                        hour12: false
+                                    });
+                                    return (
+                                        <SelectItem key={scan.id} value={scan.id}>
+                                            <span>[{dateStr}] · {scan.targetUrl}</span>
+                                        </SelectItem>
+                                    );
+                                })}
                             </SelectContent>
                         </Select>
                         {scanB && (

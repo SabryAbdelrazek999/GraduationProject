@@ -42,6 +42,7 @@ interface ScanResult {
   highCount: number;
   mediumCount: number;
   lowCount: number;
+  infoCount: number;
 }
 
 // Map to store AbortControllers for active scans
@@ -53,20 +54,137 @@ export function setScanAbortController(scanId: string, abortController: AbortCon
   activeScanAbortControllers.set(scanId, abortController);
 }
 
+/**
+ * Calculate similarity between two strings (0-1, where 1 is identical)
+ * Uses Levenshtein distance algorithm
+ */
+function calculateStringSimilarity(str1: string, str2: string): number {
+  if (!str1 || !str2) return 0;
+  
+  const s1 = str1.toLowerCase().trim();
+  const s2 = str2.toLowerCase().trim();
+  
+  if (s1 === s2) return 1;
+  
+  const len1 = s1.length;
+  const len2 = s2.length;
+  const matrix: number[][] = [];
+  
+  for (let i = 0; i <= len2; i++) {
+    matrix[i] = [i];
+  }
+  for (let j = 0; j <= len1; j++) {
+    matrix[0][j] = j;
+  }
+  
+  for (let i = 1; i <= len2; i++) {
+    for (let j = 1; j <= len1; j++) {
+      const cost = s1[j - 1] === s2[i - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+  
+  const distance = matrix[len2][len1];
+  const maxLen = Math.max(len1, len2);
+  return 1 - (distance / maxLen);
+}
+
+/**
+ * Check if two vulnerabilities are duplicates
+ */
+function areDuplicateVulnerabilities(vuln1: InsertVulnerability, vuln2: InsertVulnerability): boolean {
+  // Same or similar URL
+  const urlSimilarity = calculateStringSimilarity(
+    vuln1.affectedUrl || '',
+    vuln2.affectedUrl || ''
+  );
+  
+  // If both vulnerabilities include a ZAP pluginId in details, consider them duplicates
+  const p1 = (vuln1.details && (vuln1.details as any).pluginId) || null;
+  const p2 = (vuln2.details && (vuln2.details as any).pluginId) || null;
+  if (p1 && p2 && String(p1) === String(p2)) {
+    return true;
+  }
+
+  if (urlSimilarity < 0.8) return false;
+
+  const titleSimilarity = calculateStringSimilarity(
+    vuln1.title || '',
+    vuln2.title || ''
+  );
+
+  if (titleSimilarity < 0.6) return false;
+  if (vuln1.severity !== vuln2.severity) return false;
+  if (vuln1.type !== vuln2.type) return false;
+
+  return true;
+}
+
+/**
+ * Remove duplicate vulnerabilities from the list
+ */
+function deduplicateVulnerabilities(vulnerabilities: InsertVulnerability[]): {
+  deduplicated: InsertVulnerability[];
+  removedCount: number;
+  duplicateInfo: Array<{ original: string; duplicates: number }>;
+} {
+  const deduplicated: InsertVulnerability[] = [];
+  const duplicateInfo: Array<{ original: string; duplicates: number }> = [];
+  let removedCount = 0;
+  
+  for (const vuln of vulnerabilities) {
+    let isDuplicate = false;
+    let duplicateOfIndex = -1;
+    
+    for (let i = 0; i < deduplicated.length; i++) {
+      if (areDuplicateVulnerabilities(vuln, deduplicated[i])) {
+        isDuplicate = true;
+        duplicateOfIndex = i;
+        break;
+      }
+    }
+    
+    if (!isDuplicate) {
+      deduplicated.push(vuln);
+    } else {
+      removedCount++;
+      const origTitle = deduplicated[duplicateOfIndex].title || 'Unknown';
+      const existingInfo = duplicateInfo.find(d => d.original === origTitle);
+      if (existingInfo) {
+        existingInfo.duplicates++;
+      } else {
+        duplicateInfo.push({ original: origTitle, duplicates: 1 });
+      }
+    }
+  }
+  
+  return { deduplicated, removedCount, duplicateInfo };
+}
+
 export async function performScan(scanId: string, targetUrl: string, scanType: string, abortController?: AbortController): Promise<ScanResult> {
   const vulnerabilities: InsertVulnerability[] = [];
   let criticalCount = 0;
   let highCount = 0;
   let mediumCount = 0;
   let lowCount = 0;
+  let infoCount = 0;
 
-  // Use provided AbortController or create a new one
+  let finalVulnerabilities: InsertVulnerability[] = [];
+  let finalCriticalCount = 0;
+  let finalHighCount = 0;
+  let finalMediumCount = 0;
+  let finalLowCount = 0;
+  let finalInfoCount = 0;
+
   const controller = abortController || new AbortController();
   if (!abortController) {
     activeScanAbortControllers.set(scanId, controller);
   }
 
-  // ensure any previous progress interval cleared when scan finishes/cancels
   const clearProgressInterval = () => {
     const it = activeProgressIntervals.get(scanId);
     if (it) {
@@ -79,94 +197,79 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
   const hostname = urlObj.hostname;
 
   try {
-
-    // Update scan status to running
     await storage.updateScan(scanId, {
       status: "running",
       startedAt: new Date(),
       progress: 0
     });
 
-    // Check if scan was cancelled
     if (controller.signal.aborted) {
       throw new Error("Scan cancelled by user");
     }
 
     console.log(`[Scanner] Starting ${scanType} scan pipeline for ${targetUrl}`);
 
-    // --- Stage 1: Httpx (Always run - quick validation) ---
+    // --- Stage 1: Target Validation (Httpx) ---
     if (controller.signal.aborted) throw new Error("Scan cancelled by user");
-    console.log(`[Scanner] Stage 1: Httpx - Validating target...`);
-    // Progress: 0-15% during Httpx stage (2 seconds)
-    await updateProgressSmooth(scanId, 0, 15, 2000, controller);
+    console.log(`[Scanner] Stage 1: Validating target with Httpx...`);
+    await updateProgressSmooth(scanId, 0, 10, 3000, controller);
 
-    let httpxResult;
+    let targetValidated = false;
+    let targetInfo: any = {};
+    
     try {
-      httpxResult = await httpxService.scan(targetUrl);
-
-      if (httpxResult.reachable) {
-        console.log(`[Scanner] Httpx validated target successfully`);
-        // Record Httpx findings (Tech Stack)
-        if (httpxResult.tech && httpxResult.tech.length > 0) {
-          vulnerabilities.push({
-            scanId,
-            type: "info",
-            severity: "info",
-            title: "Detected Technologies",
-            description: `Technologies detected by httpx: ${httpxResult.tech.join(", ")}`,
-            affectedUrl: targetUrl,
-            details: JSON.stringify(httpxResult, null, 2),
-            remediation: "Information only."
-          });
-        }
-      } else {
-        console.warn(`[Scanner] Httpx reported target as unreachable, trying fallback...`);
+      const httpxResult: any = await httpxService.scan(targetUrl);
+      
+      if (httpxResult && httpxResult.statusCode && httpxResult.statusCode < 500) {
+        console.log(`[Scanner] ✅ Target validated via Httpx (HTTP ${httpxResult.statusCode})`);
+        targetValidated = true;
+        targetInfo = {
+          status: httpxResult.statusCode,
+          contentType: httpxResult.contentType || 'Unknown',
+          server: httpxResult.webserver || 'Unknown',
+          title: httpxResult.title || ''
+        };
       }
-    } catch (httpxError: any) {
-      console.warn(`[Scanner] Httpx failed (${httpxError.message}), continuing with fallback validation...`);
-      httpxResult = { reachable: false };
+    } catch (validationError: any) {
+      console.warn(`[Scanner] Primary validation failed via Httpx: ${validationError.message}`);
     }
 
-    // Fallback: If httpx failed, do a simple HTTP request to validate target
-    if (!httpxResult?.reachable) {
-      try {
-        const response = await fetch(targetUrl, {
-          method: 'HEAD',
-          signal: AbortSignal.timeout(10000) // 10 second timeout
-        });
-        if (response.ok || response.status < 500) {
-          console.log(`[Scanner] Fallback validation succeeded (HTTP ${response.status})`);
-          httpxResult = { reachable: true, url: targetUrl };
-        } else {
-          throw new Error(`HTTP ${response.status}`);
-        }
-      } catch (fallbackError: any) {
-        console.error(`[Scanner] Fallback validation also failed: ${fallbackError.message}`);
-        throw new Error(`Target ${targetUrl} is unreachable (httpx and fallback both failed).`);
-      }
+    if (!targetValidated) {
+      console.warn(`[Scanner] ⚠️  Could not validate target ${targetUrl}, but continuing scan anyway...`);
+      vulnerabilities.push({
+        scanId,
+        type: "info",
+        severity: "info",
+        title: "Target Pre-Validation Note",
+        description: `Initial validation via Httpx was inconclusive. This does not necessarily mean the target is unreachable - scan will proceed.`,
+        affectedUrl: targetUrl,
+        details: "Target might be blocking automated HTTP requests.",
+        remediation: "If scan finds vulnerabilities, this warning can be ignored."
+      });
+    } else if (targetInfo.server || targetInfo.title) {
+      vulnerabilities.push({
+        scanId,
+        type: "info",
+        severity: "info",
+        title: "Server Information",
+        description: `Web server: ${targetInfo.server || 'Unknown'} | Title: ${targetInfo.title || 'Unknown'}`,
+        affectedUrl: targetUrl,
+        details: JSON.stringify(targetInfo, null, 2),
+        remediation: "Information only."
+      });
     }
-
 
     // --- Stage 2: Nmap (Skip for shallow scan) ---
     if (controller.signal.aborted) throw new Error("Scan cancelled by user");
 
     if (scanType === "shallow") {
       console.log(`[Scanner] Stage 2: Nmap - Skipped (shallow mode)`);
-      // Quick progress from 15 to 35 (1 second)
-      await updateProgressSmooth(scanId, 15, 35, 1000, controller);
+      await updateProgressSmooth(scanId, 10, 30, 1000, controller);
     } else {
       console.log(`[Scanner] Stage 2: Nmap - Port scanning (${scanType} mode)...`);
       
-      // Duration varies by scan type
-      let nmapDuration: number;
-      if (scanType === "deep") {
-        nmapDuration = 8000; // 8 seconds for deep
-      } else {
-        nmapDuration = 4000; // 4 seconds for medium
-      }
-      
-      // Progress: 15-35% with smooth animation
-      await updateProgressSmooth(scanId, 15, 35, nmapDuration, controller);
+      let nmapDuration = scanType === "deep" ? 8000 : 4000;
+      await updateProgressSmooth(scanId, 10, 30, nmapDuration, controller);
 
       try {
         const nmapResult = await nmapService.scan(hostname, scanType);
@@ -184,9 +287,11 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
             remediation: "Ensure only necessary ports are exposed."
           });
           lowCount++;
+        } else {
+          console.log(`[Scanner] Nmap completed but found no open ports`);
         }
       } catch (nmapError: any) {
-        console.warn(`[Scanner] Nmap failed: ${nmapError.message}`);
+        console.warn(`[Scanner] ⚠️  Nmap failed: ${nmapError.message}, continuing scan...`);
       }
     }
 
@@ -195,21 +300,12 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
     
     if (scanType === "shallow") {
       console.log(`[Scanner] Stage 3: Nikto - Skipped (shallow mode)`);
-      // Quick progress from 35 to 50 (1 second)
-      await updateProgressSmooth(scanId, 35, 50, 1000, controller);
+      await updateProgressSmooth(scanId, 30, 45, 1000, controller);
     } else {
       console.log(`[Scanner] Stage 3: Nikto - Web server scanning (${scanType} mode)...`);
       
-      // Duration varies by scan type
-      let niktoDuration: number;
-      if (scanType === "deep") {
-        niktoDuration = 10000; // 10 seconds for deep
-      } else {
-        niktoDuration = 3000; // 3 seconds for medium
-      }
-      
-      // Progress: 35-50% with smooth animation
-      await updateProgressSmooth(scanId, 35, 50, niktoDuration, controller);
+      let niktoDuration = scanType === "deep" ? 10000 : 3000;
+      await updateProgressSmooth(scanId, 30, 45, niktoDuration, controller);
 
       try {
         const niktoResult = await niktoService.scan(targetUrl, scanType);
@@ -227,8 +323,12 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
           });
           mediumCount++;
         }
-      } catch (e: any) {
-        console.warn(`[Scanner] Nikto failed: ${e.message}`);
+        
+        if (niktoResult.vulnerabilities.length === 0) {
+          console.log(`[Scanner] Nikto completed but found no issues`);
+        }
+      } catch (niktoError: any) {
+        console.warn(`[Scanner] ⚠️  Nikto failed: ${niktoError.message}, continuing scan...`);
       }
     }
 
@@ -236,37 +336,33 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
     if (controller.signal.aborted) throw new Error("Scan cancelled by user");
     console.log(`[Scanner] Stage 4: ZAP - Active scanning (${scanType} mode)...`);
 
-    // Progress: 50-95% during ZAP stage
     let zapResult: any = { vulnerabilities: [] };
     try {
       const zapReady = await zapClient.isReady(2, 500).catch(() => false);
       
       if (!zapReady) {
-        console.warn(`[Scanner] ZAP daemon not accessible, skipping ZAP scan`);
-        await updateProgressSmooth(scanId, 50, 90, 2000, controller);
+        console.warn(`[Scanner] ⚠️  ZAP daemon not accessible, skipping ZAP scan but continuing...`);
+        await updateProgressSmooth(scanId, 45, 90, 2000, controller);
       } else {
         const startZapTime = Date.now();
-        let lastZapProgress = 50;
+        let lastZapProgress = 45;
 
-        // Get expected ZAP duration based on scan type
         let expectedZapDuration: number;
         if (scanType === "shallow") {
-          expectedZapDuration = 30000; // 30 seconds
+          expectedZapDuration = 180000; // 3 minutes
         } else if (scanType === "deep") {
-          expectedZapDuration = 600000; // 10 minutes
+          expectedZapDuration = 7200000; // 120 minutes
         } else {
-          expectedZapDuration = 180000; // 3 minutes (medium)
+          expectedZapDuration = 600000; // 10 minutes
         }
 
+        console.log(`[Scanner] 🔍 ZAP scan starting with expected duration: ${Math.round(expectedZapDuration / 60000)} minutes`);
+
         zapResult = await zapClient.performScan(targetUrl, scanType, async (progress) => {
-          // Track elapsed time
           const elapsed = Date.now() - startZapTime;
-          
-          // Map ZAP progress (0-100) to 50-90 range
-          const mappedProgress = 50 + Math.floor((progress / 100) * 40);
+          const mappedProgress = 45 + Math.floor((progress / 100) * 45);
           lastZapProgress = mappedProgress;
           
-          // Update progress
           await storage.updateScan(scanId, { progress: mappedProgress });
           
           const elapsedSeconds = Math.round(elapsed / 1000);
@@ -274,7 +370,8 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
           console.log(`[Scanner] ZAP progress: ${progress}% (mapped: ${mappedProgress}%, elapsed: ${elapsedSeconds}s of ~${expectedSeconds}s)`);
         }, controller.signal);
 
-        // Ensure we at least reach 90% after ZAP completes
+        console.log(`[Scanner] 📊 ZAP scan complete with ${zapResult.vulnerabilities?.length || 0} vulnerabilities found`);
+
         if (lastZapProgress < 90) {
           await updateProgressSmooth(scanId, lastZapProgress, 90, 2000, controller);
         }
@@ -283,12 +380,12 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
       if (zapError.message === "Scan cancelled by user") {
         throw zapError;
       }
-      console.error(`[Scanner] ZAP scan error: ${zapError.message}`);
+      console.warn(`[Scanner] ⚠️  ZAP scan error: ${zapError.message}, continuing with other results...`);
       zapResult = { vulnerabilities: [] };
+      await updateProgressSmooth(scanId, 45, 90, 2000, controller);
     }
 
-    // Convert ZAP vulnerabilities
-    const zapVulnerabilities = zapResult.vulnerabilities.map((vuln) => ({
+    const zapVulnerabilities = zapResult.vulnerabilities.map((vuln: any) => ({
       ...vuln,
       scanId,
       affectedUrl: vuln.affectedUrl || targetUrl,
@@ -296,23 +393,40 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
 
     vulnerabilities.push(...zapVulnerabilities);
 
-    // Count ZAP severities
     for (const vuln of zapVulnerabilities) {
       switch (vuln.severity) {
         case "critical": criticalCount++; break;
         case "high": highCount++; break;
         case "medium": mediumCount++; break;
         case "low": lowCount++; break;
+        case "info": infoCount++; break;
       }
     }
 
     // --- Finalization ---
-    console.log(`[Scanner] Pipeline complete. Saving ${vulnerabilities.length} findings.`);
-    // Progress: 90-100% during finalization (2 seconds)
+    console.log(`[Scanner] ✅ Pipeline complete. Processing ${vulnerabilities.length} findings...`);
+    
+    const { deduplicated, removedCount, duplicateInfo } = deduplicateVulnerabilities(vulnerabilities);
+    
+    console.log(`[Scanner] 🔍 Deduplication: Removed ${removedCount} duplicate vulnerabilities`);
+    
+    finalVulnerabilities = deduplicated;
+    
+    for (const vuln of finalVulnerabilities) {
+      switch (vuln.severity) {
+        case "critical": finalCriticalCount++; break;
+        case "high": finalHighCount++; break;
+        case "medium": finalMediumCount++; break;
+        case "low": finalLowCount++; break;
+        case "info": finalInfoCount++; break;
+      }
+    }
+    
+    console.log(`[Scanner] ✅ Final results: ${finalVulnerabilities.length} unique vulnerabilities`);
+    
     await updateProgressSmooth(scanId, 90, 100, 2000, controller);
 
-    // Save vulnerabilities
-    for (const vuln of vulnerabilities) {
+    for (const vuln of finalVulnerabilities) {
       try {
         await storage.createVulnerability(vuln);
       } catch (err) {
@@ -320,34 +434,34 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
       }
     }
 
-    // Update scan status
     clearProgressInterval();
     await storage.updateScan(scanId, {
       status: "completed",
       completedAt: new Date(),
-      totalVulnerabilities: vulnerabilities.length,
-      criticalCount,
-      highCount,
-      mediumCount,
-      lowCount,
+      totalVulnerabilities: finalVulnerabilities.length,
+      criticalCount: finalCriticalCount,
+      highCount: finalHighCount,
+      mediumCount: finalMediumCount,
+      lowCount: finalLowCount,
+      infoCount: finalInfoCount,
       progress: 100
     });
 
-    // Create Report
     try {
       const saved = await storage.getScan(scanId);
       if (saved) {
         await storage.createReport({
           userId: saved.userId,
           scanId: saved.id,
-          reportName: `Unified Scan Report - ${saved.targetUrl}`,
+          reportName: `CyberShield Vulnerability Report - ${saved.targetUrl}`,
           reportPath: `/api/reports/export/${scanId}`,
           createdAt: new Date(),
-          total: vulnerabilities.length,
-          critical: criticalCount,
-          high: highCount,
-          medium: mediumCount,
-          low: lowCount,
+          total: finalVulnerabilities.length,
+          critical: finalCriticalCount,
+          high: finalHighCount,
+          medium: finalMediumCount,
+          low: finalLowCount,
+          scanType: saved.scanType,
         } as any);
       }
     } catch (err) {
@@ -355,40 +469,88 @@ export async function performScan(scanId: string, targetUrl: string, scanType: s
     }
 
   } catch (error: any) {
-    console.error(`[Scanner] Scan pipeline failed: ${error.message}`);
+    if (error.message === "Scan cancelled by user") {
+      console.log(`[Scanner] ❌ Scan cancelled by user`);
+      activeScanAbortControllers.delete(scanId);
+      clearProgressInterval();
 
-    // Remove abort controller and any progress interval
+      await storage.updateScan(scanId, {
+        status: "cancelled",
+        completedAt: new Date(),
+        totalVulnerabilities: 0,
+        criticalCount: 0,
+        highCount: 0,
+        mediumCount: 0,
+        lowCount: 0,
+      });
+
+      return {
+        vulnerabilities: [],
+        criticalCount: 0,
+        highCount: 0,
+        mediumCount: 0,
+        lowCount: 0,
+        infoCount: 0,
+      };
+    }
+
+    console.error(`[Scanner] ⚠️  Scan encountered error: ${error.message}`);
+    const { deduplicated: errorDeduplicated } = deduplicateVulnerabilities(vulnerabilities);
+
+    let errorCriticalCount = 0;
+    let errorHighCount = 0;
+    let errorMediumCount = 0;
+    let errorLowCount = 0;
+    let errorInfoCount = 0;
+    
+    for (const vuln of errorDeduplicated) {
+      switch (vuln.severity) {
+        case "critical": errorCriticalCount++; break;
+        case "high": errorHighCount++; break;
+        case "medium": errorMediumCount++; break;
+        case "low": errorLowCount++; break;
+        case "info": errorInfoCount++; break;
+      }
+    }
+
     activeScanAbortControllers.delete(scanId);
     clearProgressInterval();
 
-    // Update failed status
-    const status = error.message === "Scan cancelled by user" ? "cancelled" : "failed";
     await storage.updateScan(scanId, {
-      status: status as any,
+      status: "completed",
       completedAt: new Date(),
-      totalVulnerabilities: 0,
-      criticalCount: 0,
-      highCount: 0,
-      mediumCount: 0,
-      lowCount: 0,
+      totalVulnerabilities: errorDeduplicated.length,
+      criticalCount: errorCriticalCount,
+      highCount: errorHighCount,
+      mediumCount: errorMediumCount,
+      lowCount: errorLowCount,
+      infoCount: errorInfoCount,
+      progress: 100
     });
 
-    // Return empty results on catastrophic failure
+    for (const vuln of errorDeduplicated) {
+      try {
+        await storage.createVulnerability(vuln);
+      } catch (err) {}
+    }
+
     return {
-      vulnerabilities: [],
-      criticalCount: 0,
-      highCount: 0,
-      mediumCount: 0,
-      lowCount: 0,
+      vulnerabilities: errorDeduplicated,
+      criticalCount: errorCriticalCount,
+      highCount: errorHighCount,
+      mediumCount: errorMediumCount,
+      lowCount: errorLowCount,
+      infoCount: errorInfoCount,
     };
   }
 
   return {
-    vulnerabilities,
-    criticalCount,
-    highCount,
-    mediumCount,
-    lowCount,
+    vulnerabilities: finalVulnerabilities,
+    criticalCount: finalCriticalCount,
+    highCount: finalHighCount,
+    mediumCount: finalMediumCount,
+    lowCount: finalLowCount,
+    infoCount: finalInfoCount,
   };
 }
 

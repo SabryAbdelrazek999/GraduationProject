@@ -41,7 +41,8 @@ export class ZapClient {
   private baseUrl: string;
   private client = axios.create({
     headers: {
-      'User-Agent': 'ZAP-Scanner-Client'
+      'User-Agent': 'ZAP-Scanner-Client',
+      'Connection': 'keep-alive'
     }
   });
   private activeScanIds: Set<string> = new Set();
@@ -91,7 +92,7 @@ export class ZapClient {
       console.log('[ZAP] Creating new session to clear database...');
       await this.client.get(
         `${this.baseUrl}/JSON/core/action/newSession?overwrite=true`,
-        { timeout: 30000 }
+        { timeout: 60000 } // Increased to 60s
       );
       console.log('[ZAP] ✅ New session created, database cleared');
     } catch (error: any) {
@@ -140,9 +141,6 @@ export class ZapClient {
    */
   async startScan(targetUrl: string, scanDepth: string = "medium"): Promise<string> {
     try {
-      // Clear previous session to free up database cache
-      await this.clearSession();
-
       console.log(`[ZAP] Starting active scan for ${targetUrl} (depth: ${scanDepth})`);
 
       // First, add URL to context
@@ -152,7 +150,7 @@ export class ZapClient {
       try {
         await this.client.get(
           `${this.baseUrl}/JSON/core/action/accessUrl?url=${encodedUrl}`,
-          { timeout: 30000 }
+          { timeout: 60000 }
         );
         console.log(`[ZAP] ✅ URL accessed: ${targetUrl}`);
       } catch (err) {
@@ -162,39 +160,73 @@ export class ZapClient {
       // Step 2: Spider the target (configure based on depth)
       try {
         let maxChildren: number;
+        let maxDepth: number;
+        let maxDuration: number;
         
         if (scanDepth === "shallow") {
-          maxChildren = 5;  // Only 5 pages for quick scan
+          maxChildren = 5;   // 5 children per page
+          maxDepth = 2;      // Only 2 levels deep
+          maxDuration = 5;   // 5 minutes max (increased for flexibility)
         } else if (scanDepth === "deep") {
-          maxChildren = 0;  // Unlimited pages for comprehensive scan
+          maxChildren = 0;   // 0 = unlimited children (thorough crawling)
+          maxDepth = 0;      // 0 = unlimited depth
+          maxDuration = 30;  // 30 minutes max (reasonable for deep scans)
         } else {
-          maxChildren = 8; // 8 pages for standard scan (reduced from 10 for faster scanning)
+          maxChildren = 10;  // 10 children per page
+          maxDepth = 5;      // 5 levels deep
+          maxDuration = 20;  // 20 minutes max (increased for flexibility)
         }
         
         const spiderResponse = await this.client.get(
-          `${this.baseUrl}/JSON/spider/action/scan?url=${encodedUrl}&maxChildren=${maxChildren}&recurse=true`,
-          { timeout: 30000 }
+          `${this.baseUrl}/JSON/spider/action/scan?url=${encodedUrl}&maxChildren=${maxChildren}&maxDepth=${maxDepth}&maxDuration=${maxDuration}&recurse=true&subtreeOnly=false`,
+          { timeout: 60000 }
         );
         const spiderScanId = spiderResponse.data.scan;
-        console.log(`[ZAP] Spider started with ID: ${spiderScanId} (maxChildren: ${maxChildren})`);
+        console.log(`[ZAP] Spider started with ID: ${spiderScanId} (maxChildren: ${maxChildren}, maxDepth: ${maxDepth}, maxDuration: ${maxDuration}min)`);
 
-        // Wait for spider to complete. Use shorter timeouts for shallow scans
+        // Wait for spider to complete. Use flexible timeouts for different site sizes
         // to keep quick scans fast while allowing deeper scans more time.
-        let spiderTimeoutMs = 20000; // default 20s
-        if (scanDepth === "shallow") spiderTimeoutMs = 5000;   // 5s for shallow
-        if (scanDepth === "medium") spiderTimeoutMs = 20000;   // 20s for medium
-        if (scanDepth === "deep") spiderTimeoutMs = 120000;    // 2min for deep
+        let spiderTimeoutMs = 300000; // default 5 mins
+        if (scanDepth === "shallow") spiderTimeoutMs = 60000;     // 1 min
+        if (scanDepth === "medium") spiderTimeoutMs = 600000;    // 10 mins (increased from 5)
+        if (scanDepth === "deep") spiderTimeoutMs = 3600000;     // 60 mins
 
         await this.waitForSpider(spiderScanId, spiderTimeoutMs);
       } catch (err: any) {
         console.log(`[ZAP] ⚠️  Spider failed or timed out: ${err.message}, continuing with active scan...`);
       }
 
-      // Step 3: Start active scan
-      const response = await this.client.get(
-        `${this.baseUrl}/JSON/ascan/action/scan?url=${encodedUrl}&recurse=true`,
-        { timeout: 30000 }
-      );
+      // Step 3: Start active scan with policy and scan settings based on depth
+      let scanUrl = `${this.baseUrl}/JSON/ascan/action/scan?url=${encodedUrl}&recurse=true&inScopeOnly=false`;
+      
+      // Configure scan settings based on depth
+      if (scanDepth === "deep") {
+        // For deep scans: aggressive settings
+        console.log(`[ZAP] Configuring DEEP scan policy (aggressive)...`);
+        scanUrl += `&policyName=Policy%20deep&enableAllScanners=true`;
+      } else if (scanDepth === "medium") {
+        // For medium scans: balanced settings
+        console.log(`[ZAP] Configuring MEDIUM scan policy (balanced)...`);
+        scanUrl += `&policyName=Policy%20standard`;
+      } else {
+        // For shallow scans: conservative settings  
+        console.log(`[ZAP] Configuring SHALLOW scan policy (conservative)...`);
+        scanUrl += `&policyName=Policy%20quick`;
+      }
+      
+      // Start the scan
+      let response;
+      try {
+        response = await this.client.get(scanUrl, { timeout: 60000 });
+        console.log(`[ZAP] ✅ Scan configured with depth-specific settings: ${scanDepth}`);
+      } catch (policyError: any) {
+        // If policy fails, try without it (uses default)
+        console.log(`[ZAP] ⚠️  Policy configuration failed, using default policy...`);
+        response = await this.client.get(
+          `${this.baseUrl}/JSON/ascan/action/scan?url=${encodedUrl}&recurse=true&inScopeOnly=false`,
+          { timeout: 60000 }
+        );
+      }
 
       const scanId = String(response.data.scan);
       this.activeScanIds.add(scanId);
@@ -223,7 +255,7 @@ export class ZapClient {
       try {
         const response = await this.client.get(
           `${this.baseUrl}/JSON/spider/view/status?scanId=${scanId}`,
-          { timeout: 15000 }
+          { timeout: 30000 }
         );
         const progress = parseInt(response.data.status, 10);
         console.log(`[ZAP] Spider ${scanId} progress: ${progress}%`);
@@ -248,12 +280,23 @@ export class ZapClient {
   /**
    * Poll scan status until completion
    * Progress is 0-100
+   * Uses scanDepth to set appropriate timeouts
    */
-  async waitForScan(scanId: string, maxWaitMs: number, onProgress?: (progress: number) => void, abortSignal?: AbortSignal): Promise<void> {
+  async waitForScan(scanId: string, maxWaitMs: number, onProgress?: (progress: number) => void, abortSignal?: AbortSignal, scanDepth?: string): Promise<void> {
+    // Add extra buffer time to maxWaitMs for deep scans to complete fully
+    let effectiveMaxWaitMs = maxWaitMs;
+    if (scanDepth === "deep") {
+      // For deep scans, add 50% buffer to the expected time
+      effectiveMaxWaitMs = Math.ceil(maxWaitMs * 1.5);
+      console.log(`[ZAP] ⏱️  Deep scan: effective timeout increased from ${maxWaitMs}ms to ${effectiveMaxWaitMs}ms`);
+    }
+
     const startTime = Date.now();
     const pollInterval = 2000; // 2 seconds (increased from 5s for faster progress updates)
+    let lastProgress = 0;
+    let stuckCounter = 0; // Counter for stuck progress
 
-    while (Date.now() - startTime < maxWaitMs) {
+    while (Date.now() - startTime < effectiveMaxWaitMs) {
       try {
         // Check if scan was aborted
         if (abortSignal?.aborted) {
@@ -264,10 +307,25 @@ export class ZapClient {
 
         const response = await this.client.get(
           `${this.baseUrl}/JSON/ascan/view/status?scanId=${scanId}`,
-          { timeout: 15000 }
+          { timeout: 30000 }
         );
         const progress = parseInt(response.data.status, 10);
-        console.log(`[ZAP] Scan ${scanId} progress: ${progress}%`);
+        const elapsedSeconds = Math.round((Date.now() - startTime) / 1000);
+        const elapsedMinutes = Math.round(elapsedSeconds / 60);
+        
+        console.log(`[ZAP] Scan ${scanId} progress: ${progress}% (elapsed: ${elapsedMinutes}m ${elapsedSeconds % 60}s)`);
+
+        // Check if progress is stuck
+        if (progress === lastProgress && progress < 100) {
+          stuckCounter++;
+          if (stuckCounter % 30 === 0) { // Every 60 seconds (30 * 2s)
+            console.log(`[ZAP] ⚠️  Scan progress stuck at ${progress}% for ${stuckCounter * 2}s`);
+          }
+        } else {
+          stuckCounter = 0; // Reset counter on progress change
+        }
+        
+        lastProgress = progress;
 
         if (onProgress) {
           onProgress(progress);
@@ -275,7 +333,7 @@ export class ZapClient {
 
         if (progress === 100) {
           this.activeScanIds.delete(scanId);
-          console.log(`[ZAP] ✅ Scan ${scanId} completed`);
+          console.log(`[ZAP] ✅ Scan ${scanId} completed after ${elapsedMinutes}m`);
           return;
         }
 
@@ -291,22 +349,65 @@ export class ZapClient {
       }
     }
 
-    throw new Error(`ZAP scan ${scanId} did not complete within ${maxWaitMs}ms`);
+    throw new Error(`ZAP scan ${scanId} did not complete within ${Math.round(effectiveMaxWaitMs / 60000)} minutes (timeout: ${scanDepth || 'unknown' } scan)`);
   }
 
   /**
    * Retrieve all alerts for a scan
+   * Note: scanId parameter may not work in all ZAP versions
+   * We retrieve all alerts from the current session instead
    */
-  async getAlerts(scanId?: string): Promise<ZapAlert[]> {
+  async getAlerts(scanId?: string, filterUrl?: string): Promise<ZapAlert[]> {
     try {
-      const baseParam = scanId ? `?scanId=${scanId}` : "";
-      const response = await this.client.get(
-        `${this.baseUrl}/JSON/core/view/alerts${baseParam}`,
-        { timeout: 15000 }
-      );
+      // Try with scanId first (for older ZAP versions)
+      let response;
+      if (scanId) {
+        try {
+          response = await this.client.get(
+            `${this.baseUrl}/JSON/core/view/alerts?scanId=${scanId}`,
+            { timeout: 30000 }
+          );
+        } catch (e) {
+          console.log(`[ZAP] Warning: Failed to get alerts with scanId, falling back to all alerts...`);
+          response = await this.client.get(
+            `${this.baseUrl}/JSON/core/view/alerts`,
+            { timeout: 30000 }
+          );
+        }
+      } else {
+        response = await this.client.get(
+          `${this.baseUrl}/JSON/core/view/alerts`,
+          { timeout: 30000 }
+        );
+      }
 
-      const alerts: ZapAlert[] = response.data.alerts || [];
-      console.log(`[ZAP] Retrieved ${alerts.length} alerts`);
+      let alerts: ZapAlert[] = response.data.alerts || [];
+      console.log(`[ZAP] Retrieved ${alerts.length} alerts from scan${scanId ? ` ${scanId}` : ''}`);
+      
+      if (alerts.length > 0) {
+        console.log(`[ZAP] Sample alert - Title: "${alerts[0].alert || alerts[0].name}", Risk: "${alerts[0].risk || alerts[0].riskCode || alerts[0].riskcode}"`);
+      }
+      
+      // If caller provided a filterUrl, narrow alerts to those matching the target
+      if (filterUrl) {
+        try {
+          const urlObj = new URL(filterUrl);
+          const host = urlObj.hostname;
+          alerts = alerts.filter(a => {
+            try {
+              if (!a.url) return false;
+              const aUrl = new URL(a.url);
+              return aUrl.hostname === host;
+            } catch (e) {
+              return String(a.url || '').includes(host);
+            }
+          });
+          console.log(`[ZAP] Filtered alerts to ${alerts.length} items matching host ${host}`);
+        } catch (e) {
+          // ignore filtering errors
+        }
+      }
+
       return alerts;
     } catch (error: any) {
       console.error("[ZAP] Failed to get alerts:", error.message);
@@ -318,19 +419,25 @@ export class ZapClient {
    * Convert ZAP alerts to our vulnerability format
    */
   convertAlertsToVulnerabilities(alerts: ZapAlert[]): ZapScanResult["vulnerabilities"] {
+    console.log(`[ZAP] Converting ${alerts.length} alerts to vulnerabilities`);
     if (alerts.length > 0) {
       console.log(`[ZAP] Debug - First alert keys: ${Object.keys(alerts[0]).join(", ")}`);
       const first = alerts[0];
-      console.log(`[ZAP] Debug - Risk data: riskCode=${first.riskCode}, riskcode=${first.riskcode}, risk=${first.risk}`);
+      console.log(`[ZAP] Debug - First alert details:`);
+      console.log(`  - Name: ${first.alert || first.name || first.pluginName}`);
+      console.log(`  - RiskCode: ${first.riskCode}, riskcode: ${first.riskcode}, risk: ${first.risk}`);
+      console.log(`  - URL: ${first.url}`);
+    } else {
+      console.log(`[ZAP] Warning: No alerts to convert - scan may not have found vulnerabilities or alerts were not retrieved`);
     }
 
     const riskMap: Record<string, "critical" | "high" | "medium" | "low"> = {
-      "3": "high",
-      "High": "high",
-      "2": "medium",
-      "Medium": "medium",
-      "1": "low",
-      "Low": "low",
+      "3": "critical",
+      "High": "critical",
+      "2": "high",
+      "Medium": "high",
+      "1": "medium",
+      "Low": "medium",
       "0": "low",
       "Informational": "low",
     };
@@ -370,26 +477,45 @@ export class ZapClient {
       throw new Error("ZAP daemon is not ready. Check that it is running and accessible.");
     }
 
+    // Start a fresh ZAP session to avoid alerts from previous scans polluting results
+    try {
+      await this.clearSession();
+    } catch (e) {
+      // non-fatal
+    }
+
     // Configure timeout based on scan depth
-    // Shallow: very quick overall timeout, Medium: moderate, Deep: long
+    // Deep scans should have much longer timeouts
     let maxWaitMs: number;
     if (scanDepth === "shallow") {
-      maxWaitMs = 15000;  // 15 seconds for quick scan
+      maxWaitMs = 300000;   // 5 minutes
     } else if (scanDepth === "deep") {
-      maxWaitMs = 600000; // 10 minutes for comprehensive scan
+      maxWaitMs = 3600000;  // 60 minutes
     } else {
-      maxWaitMs = 120000; // 2 minutes for standard scan
+      maxWaitMs = 1800000;  // 30 minutes for medium (increased from 10)
     }
 
     try {
       // Start the scan
       const scanId = await this.startScan(targetUrl, scanDepth);
 
-      // Wait for completion with appropriate timeout
-      await this.waitForScan(scanId, maxWaitMs, onProgress, abortSignal);
+      // Wait for completion with appropriate timeout and pass scanDepth for buffer calculation
+      await this.waitForScan(scanId, maxWaitMs, onProgress, abortSignal, scanDepth);
 
-      // Get results
-      const alerts = await this.getAlerts(scanId);
+      // Get results - retry if empty for deep scans
+      let alerts = await this.getAlerts(scanId, targetUrl);
+      
+      // For deep scans, if we get no alerts, wait a moment and try again
+      // (sometimes there's a race condition with alert retrieval)
+      if (scanDepth === "deep" && alerts.length === 0) {
+        console.log(`[ZAP] Deep scan returned no alerts on first try, waiting 5 seconds and retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        alerts = await this.getAlerts(scanId, targetUrl);
+        if (alerts.length === 0) {
+          console.log(`[ZAP] Still no alerts after retry - this scan genuinely found no vulnerabilities`);
+        }
+      }
+      
       const vulnerabilities = this.convertAlertsToVulnerabilities(alerts);
 
       return { alerts, vulnerabilities };

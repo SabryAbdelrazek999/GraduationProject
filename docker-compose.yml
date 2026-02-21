@@ -9,8 +9,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      zap:
-        condition: service_healthy
     volumes:
       - ./logs:/app/logs
       - ./uploads:/app/uploads
@@ -36,6 +34,7 @@ services:
       - .env
     environment:
       POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: SecurePass123!
       POSTGRES_DB: zapdb
       TZ: Africa/Cairo
     ports:
@@ -50,7 +49,7 @@ services:
       retries: 5
 
   zap:
-    image: ghcr.io/zaproxy/zaproxy:latest
+    image: owasp/zap2docker-stable:latest
     container_name: zap_daemon
     ports:
       - "8081:8080"
@@ -78,6 +77,8 @@ services:
       - -config
       - database.newsessionprompt=false
     restart: unless-stopped
+    profiles:
+      - zap
     healthcheck:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080" ]
       interval: 30s
